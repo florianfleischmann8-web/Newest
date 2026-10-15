@@ -1,0 +1,633 @@
+name: Build Funk APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Projekt generieren
+        run: |
+          mkdir -p app/src/main/java/app/funk
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Funk"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "app.funk"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "app.funk"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures { compose = true }
+              composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+              packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.activity:activity-compose:1.9.0")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+              implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+              <application
+                  android:label="Funk"
+                  android:icon="@android:drawable/sym_def_app_icon"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".RadioService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaPlayback" />
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/app/funk/Radio.kt <<'EOF'
+          package app.funk
+
+          import android.media.AudioAttributes
+          import android.media.AudioFormat
+          import android.media.AudioRecord
+          import android.media.AudioTrack
+          import android.media.MediaRecorder
+          import android.os.Handler
+          import android.os.Looper
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
+          import org.eclipse.paho.client.mqttv3.MqttCallbackExtended
+          import org.eclipse.paho.client.mqttv3.MqttClient
+          import org.eclipse.paho.client.mqttv3.MqttConnectOptions
+          import org.eclipse.paho.client.mqttv3.MqttMessage
+          import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+
+          object Radio : MqttCallbackExtended {
+              private const val RATE = 16000
+              private const val CH = 1280
+              private const val BROKER = "tcp://broker.hivemq.com:1883"
+              private const val PREFIX = "funkapp1/ch/"
+
+              val connected = MutableStateFlow(false)
+              val incoming = MutableStateFlow<String?>(null)
+              val talking = MutableStateFlow(false)
+
+              private var me = ""
+              private var client: MqttClient? = null
+              private var track: AudioTrack? = null
+              private var pre = 0
+              private val lock = Any()
+              private val main = Handler(Looper.getMainLooper())
+              @Volatile private var sending = false
+
+              @Synchronized
+              fun start(num: String) {
+                  if (client != null) return
+                  me = num
+                  val c = MqttClient(BROKER, "fnk" + num + (1000..9999).random(), MemoryPersistence())
+                  c.setCallback(this)
+                  client = c
+                  Thread {
+                      val o = MqttConnectOptions().apply {
+                          isAutomaticReconnect = true
+                          isCleanSession = true
+                          keepAliveInterval = 20
+                          connectionTimeout = 10
+                      }
+                      while (!c.isConnected) {
+                          try { c.connect(o) } catch (e: Exception) { Thread.sleep(3000) }
+                      }
+                  }.start()
+              }
+
+              override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+                  Thread {
+                      try {
+                          client?.subscribe(PREFIX + me, 0)
+                          connected.value = true
+                      } catch (e: Exception) { }
+                  }.start()
+              }
+
+              override fun connectionLost(cause: Throwable?) { connected.value = false }
+              override fun deliveryComplete(token: IMqttDeliveryToken?) {}
+
+              override fun messageArrived(topic: String?, m: MqttMessage?) {
+                  val p = m?.payload ?: return
+                  if (p.size < 9) return
+                  val from = String(p, 0, 8)
+                  if (p[8].toInt() == 1) {
+                      main.removeCallbacks(idle)
+                      main.post(idle)
+                      return
+                  }
+                  synchronized(lock) {
+                      val t = track ?: newTrack().also { track = it; pre = 0 }
+                      t.write(p, 9, p.size - 9)
+                      if (++pre == 2) t.play()
+                  }
+                  incoming.value = from
+                  main.removeCallbacks(idle)
+                  main.postDelayed(idle, 1500)
+              }
+
+              private val idle = Runnable {
+                  incoming.value = null
+                  val t = synchronized(lock) { track.also { track = null } }
+                  if (t != null) Thread {
+                      try { t.play(); t.stop(); Thread.sleep(600); t.release() } catch (e: Exception) { }
+                  }.start()
+              }
+
+              private fun newTrack(): AudioTrack {
+                  val min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                  return AudioTrack.Builder()
+                      .setAudioAttributes(
+                          AudioAttributes.Builder()
+                              .setUsage(AudioAttributes.USAGE_MEDIA)
+                              .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                              .build()
+                      )
+                      .setAudioFormat(
+                          AudioFormat.Builder()
+                              .setSampleRate(RATE)
+                              .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                              .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                              .build()
+                      )
+                      .setBufferSizeInBytes(maxOf(min * 2, 16000))
+                      .setTransferMode(AudioTrack.MODE_STREAM)
+                      .build()
+              }
+
+              fun talk(target: String) {
+                  if (sending || !connected.value) return
+                  sending = true
+                  talking.value = true
+                  Thread {
+                      var r: AudioRecord? = null
+                      try {
+                          val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                          r = AudioRecord(
+                              MediaRecorder.AudioSource.MIC, RATE,
+                              AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                              maxOf(min, CH * 4)
+                          )
+                          r.startRecording()
+                          val topic = PREFIX + target
+                          val buf = ByteArray(9 + CH)
+                          me.toByteArray().copyInto(buf)
+                          while (sending) {
+                              val n = r.read(buf, 9, CH)
+                              if (n > 0) client?.publish(topic, buf.copyOf(9 + n), 0, false)
+                          }
+                          val end = ByteArray(9)
+                          me.toByteArray().copyInto(end)
+                          end[8] = 1
+                          client?.publish(topic, end, 0, false)
+                      } catch (e: Exception) {
+                          sending = false
+                      } finally {
+                          try { r?.stop(); r?.release() } catch (e: Exception) { }
+                          talking.value = false
+                      }
+                  }.start()
+              }
+
+              fun stopTalk() { sending = false }
+          }
+          EOF
+
+          cat > app/src/main/java/app/funk/RadioService.kt <<'EOF'
+          package app.funk
+
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.os.IBinder
+          import android.os.PowerManager
+          import androidx.core.app.NotificationCompat
+          import androidx.core.app.ServiceCompat
+          import android.content.pm.ServiceInfo
+
+          class RadioService : Service() {
+              private var wl: PowerManager.WakeLock? = null
+
+              override fun onBind(i: Intent?): IBinder? = null
+
+              override fun onStartCommand(i: Intent?, flags: Int, id: Int): Int {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel("radio", "Funk", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  val pi = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val n = NotificationCompat.Builder(this, "radio")
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentTitle("Funk bereit")
+                      .setContentText("Empfang läuft im Hintergrund")
+                      .setContentIntent(pi)
+                      .setOngoing(true)
+                      .build()
+                  ServiceCompat.startForeground(this, 1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                  if (wl == null) {
+                      wl = (getSystemService(POWER_SERVICE) as PowerManager)
+                          .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "funk:radio")
+                          .apply { acquire() }
+                  }
+                  Radio.start(Store.number(this))
+                  return START_STICKY
+              }
+
+              override fun onDestroy() {
+                  wl?.release()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/app/funk/MainActivity.kt <<'EOF'
+          package app.funk
+
+          import android.Manifest
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.animation.core.RepeatMode
+          import androidx.compose.animation.core.animateFloat
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.infiniteRepeatable
+          import androidx.compose.animation.core.rememberInfiniteTransition
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
+          import androidx.compose.foundation.gestures.detectTapGestures
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyRow
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.draw.clip
+          import androidx.compose.ui.draw.scale
+          import androidx.compose.ui.draw.shadow
+          import androidx.compose.ui.graphics.Brush
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+          import androidx.compose.ui.input.pointer.pointerInput
+          import androidx.compose.ui.platform.LocalClipboardManager
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalHapticFeedback
+          import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.KeyboardType
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+
+          val Neon = Color(0xFF00E5FF)
+          val Violet = Color(0xFF7C4DFF)
+          val Muted = Color(0xFF8A94A8)
+
+          object Store {
+              private fun p(c: Context) = c.getSharedPreferences("funk", Context.MODE_PRIVATE)
+              fun number(c: Context): String {
+                  val s = p(c).getString("num", null)
+                  if (s != null) return s
+                  val n = (10000000..99999999).random().toString()
+                  p(c).edit().putString("num", n).apply()
+                  return n
+              }
+              fun contacts(c: Context): List<Pair<String, String>> =
+                  p(c).getString("c", "")!!.lines().filter { it.contains(";") }
+                      .map { it.substringBefore(";") to it.substringAfter(";") }
+              fun save(c: Context, l: List<Pair<String, String>>) {
+                  p(c).edit().putString("c", l.joinToString("\n") { it.first + ";" + it.second }).apply()
+              }
+          }
+
+          fun fmt(n: String) = n.chunked(4).joinToString(" ")
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent { MaterialTheme(colorScheme = darkColorScheme()) { App() } }
+              }
+          }
+
+          @Composable
+          fun App() {
+              val ctx = LocalContext.current
+              fun hasMic() = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
+                  PackageManager.PERMISSION_GRANTED
+              var ok by remember { mutableStateOf(hasMic()) }
+              val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+                  ok = hasMic()
+              }
+              LaunchedEffect(ok) {
+                  if (ok) ContextCompat.startForegroundService(ctx, Intent(ctx, RadioService::class.java))
+              }
+              Box(
+                  Modifier.fillMaxSize()
+                      .background(Brush.verticalGradient(listOf(Color(0xFF05070D), Color(0xFF0D1426), Color(0xFF05070D))))
+                      .systemBarsPadding()
+              ) {
+                  if (ok) Home() else Welcome {
+                      val perms = if (Build.VERSION.SDK_INT >= 33)
+                          arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+                      else arrayOf(Manifest.permission.RECORD_AUDIO)
+                      ask.launch(perms)
+                  }
+              }
+          }
+
+          @Composable
+          fun Welcome(onAllow: () -> Unit) {
+              Column(
+                  Modifier.fillMaxSize().padding(32.dp),
+                  verticalArrangement = Arrangement.Center,
+                  horizontalAlignment = Alignment.CenterHorizontally
+              ) {
+                  Text("FUNK", fontSize = 56.sp, fontWeight = FontWeight.Black, letterSpacing = 12.sp, color = Neon)
+                  Spacer(Modifier.height(16.dp))
+                  Text(
+                      "Walkie-Talkie in Echtzeit.\nTaste halten, sprechen, fertig. Der andere muss nichts annehmen.",
+                      color = Color.White, textAlign = TextAlign.Center, fontSize = 17.sp
+                  )
+                  Spacer(Modifier.height(12.dp))
+                  Text(
+                      "Damit du auch bei geschlossener App Funksprüche hörst, braucht Funk Zugriff auf Mikrofon und Benachrichtigungen.",
+                      color = Muted, textAlign = TextAlign.Center, fontSize = 14.sp
+                  )
+                  Spacer(Modifier.height(36.dp))
+                  Button(
+                      onClick = onAllow,
+                      colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
+                      shape = RoundedCornerShape(50),
+                      modifier = Modifier.fillMaxWidth().height(56.dp)
+                  ) { Text("Erlauben & starten", fontWeight = FontWeight.Bold, fontSize = 17.sp) }
+              }
+          }
+
+          @Composable
+          fun Home() {
+              val ctx = LocalContext.current
+              val me = remember { Store.number(ctx) }
+              val online by Radio.connected.collectAsState()
+              val inc by Radio.incoming.collectAsState()
+              val talking by Radio.talking.collectAsState()
+              var contacts by remember { mutableStateOf(Store.contacts(ctx)) }
+              var target by remember { mutableStateOf(contacts.firstOrNull()?.first) }
+              var dlg by remember { mutableStateOf(false) }
+              val haptic = LocalHapticFeedback.current
+              val clip = LocalClipboardManager.current
+              fun nameOf(n: String) = contacts.firstOrNull { it.first == n }?.second ?: fmt(n)
+
+              Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                      Text("FUNK", fontSize = 22.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp, color = Color.White)
+                      Spacer(Modifier.weight(1f))
+                      Box(
+                          Modifier.size(10.dp).clip(CircleShape)
+                              .background(if (online) Color(0xFF00E676) else Color(0xFFFFA000))
+                      )
+                      Spacer(Modifier.width(8.dp))
+                      Text(if (online) "ONLINE" else "VERBINDE…", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp)
+                  }
+                  Spacer(Modifier.height(20.dp))
+                  Column(
+                      Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
+                          .background(Color.White.copy(alpha = 0.06f))
+                          .pointerInput(Unit) { detectTapGestures { clip.setText(AnnotatedString(me)) } }
+                          .padding(20.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally
+                  ) {
+                      Text("DEINE NUMMER (TIPPEN = KOPIEREN)", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp)
+                      Spacer(Modifier.height(6.dp))
+                      Text(fmt(me), fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Neon, fontFamily = FontFamily.Monospace)
+                  }
+                  Spacer(Modifier.height(16.dp))
+                  val who = inc
+                  Box(Modifier.height(32.dp), contentAlignment = Alignment.Center) {
+                      if (who != null) Text("● " + nameOf(who) + " spricht…", color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                  }
+                  Spacer(Modifier.weight(1f))
+                  Text(target?.let { nameOf(it) } ?: "Kontakt wählen", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                  Text(target?.let { fmt(it) } ?: "unten + antippen", color = Muted, fontSize = 14.sp)
+                  Spacer(Modifier.height(8.dp))
+                  Ptt(
+                      active = talking,
+                      enabled = target != null && online,
+                      onDown = {
+                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                          target?.let { Radio.talk(it) }
+                      },
+                      onUp = { Radio.stopTalk() }
+                  )
+                  Spacer(Modifier.weight(1f))
+                  Text("Lange auf Kontakt drücken = löschen", color = Muted, fontSize = 11.sp)
+                  Spacer(Modifier.height(8.dp))
+                  LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                      items(contacts) { c ->
+                          val sel = c.first == target
+                          Column(
+                              Modifier.clip(RoundedCornerShape(18.dp))
+                                  .background(if (sel) Neon.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.06f))
+                                  .border(1.dp, if (sel) Neon else Color.Transparent, RoundedCornerShape(18.dp))
+                                  .pointerInput(c) {
+                                      detectTapGestures(
+                                          onTap = { target = c.first },
+                                          onLongPress = {
+                                              contacts = contacts.filter { it.first != c.first }
+                                              Store.save(ctx, contacts)
+                                              if (target == c.first) target = contacts.firstOrNull()?.first
+                                          }
+                                      )
+                                  }
+                                  .padding(horizontal = 18.dp, vertical = 12.dp)
+                          ) {
+                              Text(c.second, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
+                              Text(fmt(c.first), color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                          }
+                      }
+                      item {
+                          Box(
+                              Modifier.clip(RoundedCornerShape(18.dp))
+                                  .background(Brush.linearGradient(listOf(Neon, Violet)))
+                                  .pointerInput(Unit) { detectTapGestures { dlg = true } }
+                                  .padding(horizontal = 22.dp, vertical = 18.dp),
+                              contentAlignment = Alignment.Center
+                          ) { Text("+ Neu", color = Color.Black, fontWeight = FontWeight.Black) }
+                      }
+                  }
+              }
+
+              if (dlg) AddDialog(me, { dlg = false }) { n, name ->
+                  contacts = contacts.filter { it.first != n } + (n to name.replace(";", " "))
+                  Store.save(ctx, contacts)
+                  target = n
+                  dlg = false
+              }
+          }
+
+          @Composable
+          fun Ptt(active: Boolean, enabled: Boolean, onDown: () -> Unit, onUp: () -> Unit) {
+              val inf = rememberInfiniteTransition(label = "pulse")
+              val pulse by inf.animateFloat(
+                  initialValue = 1f, targetValue = 1.4f,
+                  animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "p"
+              )
+              val press by animateFloatAsState(if (active) 0.94f else 1f, label = "s")
+              val colors = if (active) listOf(Color(0xFFFF3D71), Color(0xFFFF8A00))
+              else if (enabled) listOf(Neon, Violet) else listOf(Color(0xFF3A4256), Color(0xFF2A3042))
+              Box(Modifier.size(300.dp), contentAlignment = Alignment.Center) {
+                  if (active) Box(
+                      Modifier.size(210.dp).scale(pulse).clip(CircleShape)
+                          .background(Color(0xFFFF3D71).copy(alpha = 0.2f))
+                  )
+                  Box(
+                      Modifier.size(210.dp).scale(press)
+                          .shadow(if (active) 40.dp else 18.dp, CircleShape, spotColor = colors[0], ambientColor = colors[0])
+                          .clip(CircleShape)
+                          .background(Brush.linearGradient(colors))
+                          .pointerInput(enabled) {
+                              detectTapGestures(onPress = {
+                                  if (enabled) {
+                                      onDown()
+                                      tryAwaitRelease()
+                                      onUp()
+                                  }
+                              })
+                          },
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Text(
+                          if (active) "SENDET" else "HALTEN",
+                          color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          fun AddDialog(me: String, onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
+              var num by remember { mutableStateOf("") }
+              var name by remember { mutableStateOf("") }
+              AlertDialog(
+                  onDismissRequest = onDismiss,
+                  containerColor = Color(0xFF111A2E),
+                  title = { Text("Nummer speichern") },
+                  text = {
+                      Column {
+                          OutlinedTextField(
+                              value = num, onValueChange = { num = it.filter(Char::isDigit).take(8) },
+                              label = { Text("8-stellige Nummer") }, singleLine = true,
+                              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                          )
+                          Spacer(Modifier.height(8.dp))
+                          OutlinedTextField(
+                              value = name, onValueChange = { name = it.take(20) },
+                              label = { Text("Name") }, singleLine = true
+                          )
+                      }
+                  },
+                  confirmButton = {
+                      TextButton(onClick = {
+                          if (num.length == 8 && num != me) onAdd(num, name.ifBlank { fmt(num) })
+                      }) { Text("Speichern") }
+                  },
+                  dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen") } }
+              )
+          }
+          EOF
+
+      - name: APK bauen
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Funk-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
