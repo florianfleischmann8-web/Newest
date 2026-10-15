@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -456,6 +461,28 @@ jobs:
           }
 
           @Composable
+          fun Glass(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+              Column(
+                  modifier.clip(RoundedCornerShape(22.dp))
+                      .background(Color.White.copy(alpha = 0.06f))
+                      .border(1.dp, Brush.linearGradient(listOf(Neon.copy(alpha = 0.5f), Violet.copy(alpha = 0.2f))), RoundedCornerShape(22.dp))
+                      .padding(16.dp),
+                  content = content
+              )
+          }
+
+          @Composable
+          fun Eq() {
+              val t = rememberInfiniteTransition(label = "eq")
+              Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                  for (i in 0 until 5) {
+                      val h by t.animateFloat(6f, 24f, infiniteRepeatable(tween(350 + i * 90), RepeatMode.Reverse), label = "b" + i)
+                      Box(Modifier.width(4.dp).height(h.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF00E676)))
+                  }
+              }
+          }
+
+          @Composable
           fun Home() {
               val ctx = LocalContext.current
               val me = remember { Store.number(ctx) }
@@ -468,51 +495,64 @@ jobs:
               val haptic = LocalHapticFeedback.current
               val clip = LocalClipboardManager.current
               fun nameOf(n: String) = contacts.firstOrNull { it.first == n }?.second ?: fmt(n)
+              val who = inc
 
-              Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                  Row(verticalAlignment = Alignment.CenterVertically) {
-                      Text("FUNK", fontSize = 22.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp, color = Color.White)
+              Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
+                  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                      Text("FUNK", fontSize = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 8.sp, color = Neon)
                       Spacer(Modifier.weight(1f))
-                      Box(
-                          Modifier.size(10.dp).clip(CircleShape)
-                              .background(if (online) Color(0xFF00E676) else Color(0xFFFFA000))
-                      )
-                      Spacer(Modifier.width(8.dp))
-                      Text(if (online) "ONLINE" else "VERBINDE…", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp)
+                      Row(
+                          Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.08f))
+                              .padding(horizontal = 12.dp, vertical = 6.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          Box(Modifier.size(8.dp).clip(CircleShape).background(if (online) Color(0xFF00E676) else Color(0xFFFFA000)))
+                          Spacer(Modifier.width(8.dp))
+                          Text(if (online) "ONLINE" else "VERBINDE", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp)
+                      }
                   }
-                  Spacer(Modifier.height(20.dp))
-                  Column(
-                      Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
-                          .background(Color.White.copy(alpha = 0.06f))
-                          .pointerInput(Unit) { detectTapGestures { clip.setText(AnnotatedString(me)) } }
-                          .padding(20.dp),
-                      horizontalAlignment = Alignment.CenterHorizontally
-                  ) {
-                      Text("DEINE NUMMER (TIPPEN = KOPIEREN)", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp)
+                  Spacer(Modifier.height(14.dp))
+                  Glass(Modifier.fillMaxWidth().pointerInput(Unit) { detectTapGestures { clip.setText(AnnotatedString(me)) } }) {
+                      Text("DEINE NUMMER · TIPPEN ZUM KOPIEREN", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
                       Spacer(Modifier.height(6.dp))
-                      Text(fmt(me), fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Neon, fontFamily = FontFamily.Monospace)
+                      Text(fmt(me), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace)
                   }
-                  Spacer(Modifier.height(16.dp))
-                  val who = inc
-                  Box(Modifier.height(32.dp), contentAlignment = Alignment.Center) {
-                      if (who != null) Text("● " + nameOf(who) + " spricht…", color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                  Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+                      if (who != null) Row(verticalAlignment = Alignment.CenterVertically) {
+                          Eq()
+                          Spacer(Modifier.width(10.dp))
+                          Text(nameOf(who) + " spricht", color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                      }
                   }
-                  Spacer(Modifier.weight(1f))
-                  Text(target?.let { nameOf(it) } ?: "Kontakt wählen", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                  Text(target?.let { fmt(it) } ?: "unten + antippen", color = Muted, fontSize = 14.sp)
-                  Spacer(Modifier.height(8.dp))
-                  Ptt(
-                      active = talking,
-                      enabled = target != null && online,
-                      onDown = {
-                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                          target?.let { Radio.talk(it) }
-                      },
-                      onUp = { Radio.stopTalk() }
-                  )
-                  Spacer(Modifier.weight(1f))
-                  Text("Lange auf Kontakt drücken = löschen", color = Muted, fontSize = 11.sp)
-                  Spacer(Modifier.height(8.dp))
+                  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                      val s = maxOf(minOf(maxWidth, maxHeight - 90.dp), 150.dp)
+                      Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                          Text(target?.let { nameOf(it) } ?: "Kein Kontakt gewählt", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                          Text(target?.let { fmt(it) } ?: "unten Kontakt hinzufügen", color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                          Ptt(
+                              active = talking,
+                              enabled = target != null && online,
+                              size = s,
+                              onDown = {
+                                  haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                  target?.let { Radio.talk(it) }
+                              },
+                              onUp = { Radio.stopTalk() }
+                          )
+                      }
+                  }
+                  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                      Text("KONTAKTE", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp)
+                      Spacer(Modifier.weight(1f))
+                      Button(
+                          onClick = { dlg = true },
+                          colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
+                          shape = RoundedCornerShape(50),
+                          contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)
+                      ) { Text("+ HINZUFÜGEN", fontWeight = FontWeight.Black, fontSize = 12.sp) }
+                  }
+                  Spacer(Modifier.height(10.dp))
+                  if (contacts.isEmpty()) Text("Noch keine Kontakte. Tippe oben auf + HINZUFÜGEN.", color = Muted, fontSize = 13.sp)
                   LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                       items(contacts) { c ->
                           val sel = c.first == target
@@ -536,16 +576,8 @@ jobs:
                               Text(fmt(c.first), color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                           }
                       }
-                      item {
-                          Box(
-                              Modifier.clip(RoundedCornerShape(18.dp))
-                                  .background(Brush.linearGradient(listOf(Neon, Violet)))
-                                  .pointerInput(Unit) { detectTapGestures { dlg = true } }
-                                  .padding(horizontal = 22.dp, vertical = 18.dp),
-                              contentAlignment = Alignment.Center
-                          ) { Text("+ Neu", color = Color.Black, fontWeight = FontWeight.Black) }
-                      }
                   }
+                  if (contacts.isNotEmpty()) Text("Lange drücken = löschen", color = Muted.copy(alpha = 0.6f), fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
               }
 
               if (dlg) AddDialog(me, { dlg = false }) { n, name ->
@@ -557,7 +589,7 @@ jobs:
           }
 
           @Composable
-          fun Ptt(active: Boolean, enabled: Boolean, onDown: () -> Unit, onUp: () -> Unit) {
+          fun Ptt(active: Boolean, enabled: Boolean, size: androidx.compose.ui.unit.Dp, onDown: () -> Unit, onUp: () -> Unit) {
               val inf = rememberInfiniteTransition(label = "pulse")
               val pulse by inf.animateFloat(
                   initialValue = 1f, targetValue = 1.4f,
@@ -566,13 +598,13 @@ jobs:
               val press by animateFloatAsState(if (active) 0.94f else 1f, label = "s")
               val colors = if (active) listOf(Color(0xFFFF3D71), Color(0xFFFF8A00))
               else if (enabled) listOf(Neon, Violet) else listOf(Color(0xFF3A4256), Color(0xFF2A3042))
-              Box(Modifier.size(300.dp), contentAlignment = Alignment.Center) {
+              Box(Modifier.size(size), contentAlignment = Alignment.Center) {
                   if (active) Box(
-                      Modifier.size(210.dp).scale(pulse).clip(CircleShape)
+                      Modifier.size(size * 0.7f).scale(pulse).clip(CircleShape)
                           .background(Color(0xFFFF3D71).copy(alpha = 0.2f))
                   )
                   Box(
-                      Modifier.size(210.dp).scale(press)
+                      Modifier.size(size * 0.7f).scale(press)
                           .shadow(if (active) 40.dp else 18.dp, CircleShape, spotColor = colors[0], ambientColor = colors[0])
                           .clip(CircleShape)
                           .background(Brush.linearGradient(colors))
@@ -599,32 +631,136 @@ jobs:
           fun AddDialog(me: String, onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
               var num by remember { mutableStateOf("") }
               var name by remember { mutableStateOf("") }
+              var err by remember { mutableStateOf("") }
               AlertDialog(
                   onDismissRequest = onDismiss,
                   containerColor = Color(0xFF111A2E),
-                  title = { Text("Nummer speichern") },
+                  titleContentColor = Color.White,
+                  textContentColor = Color.White,
+                  title = { Text("Kontakt hinzufügen") },
                   text = {
                       Column {
                           OutlinedTextField(
-                              value = num, onValueChange = { num = it.filter(Char::isDigit).take(8) },
-                              label = { Text("8-stellige Nummer") }, singleLine = true,
+                              value = num, onValueChange = { num = it.filter(Char::isDigit).take(8); err = "" },
+                              label = { Text("Nummer (8 Ziffern)") }, singleLine = true,
                               keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                           )
                           Spacer(Modifier.height(8.dp))
                           OutlinedTextField(
                               value = name, onValueChange = { name = it.take(20) },
-                              label = { Text("Name") }, singleLine = true
+                              label = { Text("Name (optional)") }, singleLine = true
                           )
+                          if (err.isNotEmpty()) {
+                              Spacer(Modifier.height(8.dp))
+                              Text(err, color = Color(0xFFFF5252), fontSize = 13.sp)
+                          }
                       }
                   },
                   confirmButton = {
                       TextButton(onClick = {
-                          if (num.length == 8 && num != me) onAdd(num, name.ifBlank { fmt(num) })
-                      }) { Text("Speichern") }
+                          when {
+                              num.length != 8 -> err = "Die Nummer hat 8 Ziffern."
+                              num == me -> err = "Das ist deine eigene Nummer."
+                              else -> onAdd(num, name.ifBlank { fmt(num) })
+                          }
+                      }) { Text("Speichern", color = Neon, fontWeight = FontWeight.Bold) }
                   },
-                  dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen") } }
+                  dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen", color = Muted) } }
               )
           }
+          EOF
+
+      - name: Web-App generieren
+        run: |
+          mkdir -p web
+          cat > web/index.html <<'EOF'
+          <!doctype html>
+          <html lang="de"><head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+          <title>Funk Web</title>
+          <style>
+          *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+          body{margin:0;min-height:100vh;color:#fff;font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(circle at 50% -10%,#1a2a66,#05070d 60%);display:flex;flex-direction:column;align-items:center;padding:24px 20px calc(24px + env(safe-area-inset-bottom))}
+          h1{margin:0;letter-spacing:.5em;font-weight:900;color:#00e5ff;font-size:26px;padding-left:.5em}
+          .sub{color:#8a94a8;font-size:13px;margin:6px 0 24px}
+          .pill{display:inline-flex;align-items:center;gap:8px;background:#ffffff14;border-radius:50px;padding:6px 14px;font-size:11px;letter-spacing:.2em;color:#8a94a8;margin-bottom:22px}
+          .dot{width:8px;height:8px;border-radius:50%;background:#ffa000}.on .dot{background:#00e676}
+          .card{width:100%;max-width:420px;background:#ffffff0f;border:1px solid #00e5ff55;border-radius:22px;padding:16px}
+          label{display:block;font-size:10px;letter-spacing:.2em;color:#8a94a8;margin-bottom:8px}
+          input{width:100%;background:transparent;border:0;outline:0;color:#fff;font:700 34px ui-monospace,monospace;letter-spacing:.05em;user-select:text;-webkit-user-select:text}
+          .stage{flex:1;display:flex;align-items:center;justify-content:center;min-height:320px}
+          #ptt{position:relative;width:220px;height:220px;border-radius:50%;border:0;color:#fff;font:900 24px system-ui;letter-spacing:.2em;background:linear-gradient(135deg,#00e5ff,#7c4dff);box-shadow:0 0 50px #00e5ff55;touch-action:none;transition:transform .12s}
+          #ptt::before{content:"";position:absolute;inset:-26px;border-radius:50%;border:1px solid #00e5ff33}
+          #ptt.live{transform:scale(.94);background:linear-gradient(135deg,#ff3d71,#ff8a00);box-shadow:0 0 70px #ff3d71aa;animation:p 1s infinite alternate}
+          #ptt:disabled{background:linear-gradient(135deg,#3a4256,#2a3042);box-shadow:none}
+          @keyframes p{to{box-shadow:0 0 110px #ff3d71}}
+          #msg{min-height:20px;color:#ffa000;font-size:13px;text-align:center}
+          .foot{color:#8a94a8;font-size:12px;text-align:center;max-width:420px}
+          </style></head>
+          <body>
+          <h1>FUNK</h1>
+          <div class="sub">Web-Sender · nur senden</div>
+          <div class="pill" id="st"><span class="dot"></span><span id="stt">VERBINDE</span></div>
+          <div class="card"><label>NUMMER ANRUFEN</label><input id="num" inputmode="numeric" placeholder="0000 0000" autocomplete="off"></div>
+          <div class="stage"><button id="ptt" disabled>HALTEN</button></div>
+          <div id="msg"></div>
+          <div class="foot">Deine Web-Nummer: <b id="me"></b><br>Der Empfänger hört dich live in seiner Funk-App.</div>
+          <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+          <script>
+          var RATE=16000,CH=640,ready=false,ctx=null,stream=null,proc=null,talking=false,acc=[],pos=0,topic='';
+          function rnd(){return String(10000000+Math.floor(Math.random()*89999999))}
+          var me;try{me=localStorage.getItem('n');if(!me){me=rnd();localStorage.setItem('n',me)}}catch(e){me=rnd()}
+          var $=function(i){return document.getElementById(i)};
+          function fmt(s){return s.replace(/(\d{4})(?=\d)/,'$1 ')}
+          $('me').textContent=fmt(me);
+          var numEl=$('num'),btn=$('ptt');
+          try{numEl.value=fmt(localStorage.getItem('t')||'')}catch(e){}
+          numEl.addEventListener('input',function(){var d=numEl.value.replace(/\D/g,'').slice(0,8);numEl.value=fmt(d);try{localStorage.setItem('t',d)}catch(e){}refresh()});
+          function digits(){return numEl.value.replace(/\D/g,'')}
+          function refresh(){btn.disabled=!(ready&&digits().length===8);$('st').className='pill'+(ready?' on':'');$('stt').textContent=ready?'ONLINE':'VERBINDE'}
+          var c=mqtt.connect('wss://broker.hivemq.com:8884/mqtt',{clientId:'fnkweb'+me+Math.floor(Math.random()*9999),reconnectPeriod:2000});
+          c.on('connect',function(){ready=true;refresh()});
+          c.on('close',function(){ready=false;refresh()});
+          function pkt(type,data){var o=new Uint8Array(9+(data?data.length:0));for(var i=0;i<8;i++)o[i]=me.charCodeAt(i);o[8]=type;if(data)o.set(data,9);return o}
+          function onAudio(e){
+            if(!talking)return;
+            var x=e.inputBuffer.getChannelData(0),r=ctx.sampleRate/RATE;
+            for(;pos<x.length;pos+=r){var a=Math.floor(pos),b=Math.min(x.length,Math.floor(pos+r)),s=0,n=0;for(var i=a;i<b;i++){s+=x[i];n++}acc.push(n?s/n:(x[a]||0))}
+            pos-=x.length;
+            while(acc.length>=CH){
+              var pcm=new Int16Array(CH);
+              for(var j=0;j<CH;j++){var v=Math.max(-1,Math.min(1,acc[j]));pcm[j]=v<0?v*32768:v*32767}
+              acc=acc.slice(CH);
+              c.publish(topic,pkt(0,new Uint8Array(pcm.buffer)),{qos:0});
+            }
+          }
+          async function start(){
+            if(btn.disabled||talking)return;
+            topic='funkapp1/ch/'+digits();
+            talking=true;acc=[];pos=0;btn.classList.add('live');btn.textContent='SENDET';$('msg').textContent='';
+            try{
+              if(!stream)stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+              if(!ctx){
+                ctx=new (window.AudioContext||window.webkitAudioContext)();
+                var src=ctx.createMediaStreamSource(stream);
+                proc=ctx.createScriptProcessor(4096,1,1);
+                src.connect(proc);proc.connect(ctx.destination);proc.onaudioprocess=onAudio;
+              }
+              await ctx.resume();
+            }catch(e){talking=false;btn.classList.remove('live');btn.textContent='HALTEN';$('msg').textContent='Mikrofon nicht erlaubt. Bitte Zugriff freigeben.'}
+          }
+          function stop(){
+            if(!talking)return;
+            talking=false;btn.classList.remove('live');btn.textContent='HALTEN';
+            try{c.publish(topic,pkt(1),{qos:0})}catch(e){}
+          }
+          btn.addEventListener('pointerdown',function(e){btn.setPointerCapture(e.pointerId);start()});
+          ['pointerup','pointercancel','lostpointercapture'].forEach(function(n){btn.addEventListener(n,stop)});
+          btn.addEventListener('contextmenu',function(e){e.preventDefault()});
+          refresh();
+          </script>
+          </body></html>
           EOF
 
       - name: APK bauen
@@ -634,3 +770,18 @@ jobs:
         with:
           name: Funk-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy-web:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.d.outputs.page_url }}
+    steps:
+      - id: d
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
