@@ -100,6 +100,7 @@ jobs:
               <uses-permission android:name="android.permission.RECORD_AUDIO" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.VIBRATE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
               <application
@@ -123,7 +124,14 @@ jobs:
           cat > app/src/main/java/app/funk/Radio.kt <<'EOF'
           package app.funk
 
+          import android.app.NotificationManager
+          import android.content.Context
           import android.media.AudioAttributes
+          import android.media.AudioManager
+          import android.media.ToneGenerator
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import androidx.core.app.NotificationCompat
           import android.media.AudioFormat
           import android.media.AudioRecord
           import android.media.AudioTrack
@@ -147,6 +155,10 @@ jobs:
               val connected = MutableStateFlow(false)
               val incoming = MutableStateFlow<String?>(null)
               val talking = MutableStateFlow(false)
+              val lastCaller = MutableStateFlow<String?>(null)
+              @Volatile var dndUntil = 0L
+              lateinit var app: Context
+              private var prevVol = -1
 
               private var me = ""
               private var client: MqttClient? = null
@@ -191,18 +203,23 @@ jobs:
               override fun messageArrived(topic: String?, m: MqttMessage?) {
                   val p = m?.payload ?: return
                   if (p.size < 9) return
+                  if (System.currentTimeMillis() < dndUntil) return
                   val from = String(p, 0, 8)
                   if (p[8].toInt() == 1) {
                       main.removeCallbacks(idle)
                       main.post(idle)
                       return
                   }
+                  var isNew = false
                   synchronized(lock) {
+                      isNew = track == null
                       val t = track ?: newTrack().also { track = it; pre = 0 }
                       t.write(p, 9, p.size - 9)
                       if (++pre == 2) t.play()
                   }
+                  if (isNew) callStart(from)
                   incoming.value = from
+                  lastCaller.value = from
                   main.removeCallbacks(idle)
                   main.postDelayed(idle, 1500)
               }
@@ -211,11 +228,12 @@ jobs:
                   incoming.value = null
                   val t = synchronized(lock) { track.also { track = null } }
                   if (t != null) Thread {
-                      try { t.play(); t.stop(); Thread.sleep(600); t.release() } catch (e: Exception) { }
+                      try { t.play(); t.stop(); Thread.sleep(600); t.release(); if (track == null) restoreVolume() } catch (e: Exception) { }
                   }.start()
               }
 
               private fun newTrack(): AudioTrack {
+                  halfVolume()
                   val min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
                   return AudioTrack.Builder()
                       .setAudioAttributes(
@@ -234,6 +252,48 @@ jobs:
                       .setBufferSizeInBytes(maxOf(min * 2, 16000))
                       .setTransferMode(AudioTrack.MODE_STREAM)
                       .build()
+              }
+
+              private fun halfVolume() {
+                  try {
+                      val am = app.getSystemService(AudioManager::class.java)
+                      if (prevVol < 0) prevVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                      am.setStreamVolume(AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) / 2, 0)
+                  } catch (e: Exception) { }
+              }
+
+              private fun restoreVolume() {
+                  try {
+                      if (prevVol >= 0) {
+                          app.getSystemService(AudioManager::class.java).setStreamVolume(AudioManager.STREAM_MUSIC, prevVol, 0)
+                          prevVol = -1
+                      }
+                  } catch (e: Exception) { }
+              }
+
+              private fun callStart(from: String) {
+                  try {
+                      val name = Store.contacts(app).firstOrNull { it.first == from }?.second ?: fmt(from)
+                      val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 60)
+                      tg.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
+                      main.postDelayed({ tg.release() }, 500)
+                      app.getSystemService(Vibrator::class.java)
+                          .vibrate(VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE))
+                      val pi = android.app.PendingIntent.getActivity(
+                          app, 0, android.content.Intent(app, MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE
+                      )
+                      val n = NotificationCompat.Builder(app, "call")
+                          .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                          .setContentTitle("Anruf von " + name)
+                          .setContentText(fmt(from))
+                          .setPriority(NotificationCompat.PRIORITY_HIGH)
+                          .setCategory(NotificationCompat.CATEGORY_CALL)
+                          .setTimeoutAfter(8000)
+                          .setAutoCancel(true)
+                          .setContentIntent(pi)
+                          .build()
+                      app.getSystemService(NotificationManager::class.java).notify(2, n)
+                  } catch (e: Exception) { }
               }
 
               fun talk(target: String) {
@@ -314,6 +374,14 @@ jobs:
                           .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "funk:radio")
                           .apply { acquire() }
                   }
+                  nm.createNotificationChannel(
+                      NotificationChannel("call", "Anrufe", NotificationManager.IMPORTANCE_HIGH).apply {
+                          setSound(null, null)
+                          enableVibration(false)
+                      }
+                  )
+                  Radio.app = applicationContext
+                  Radio.dndUntil = Store.dndUntil(this)
                   Radio.start(Store.number(this))
                   return START_STICKY
               }
@@ -381,6 +449,18 @@ jobs:
           val Muted = Color(0xFF8A94A8)
 
           object Store {
+              fun dndUntil(c: Context) = c.getSharedPreferences("funk", Context.MODE_PRIVATE).getLong("dndUntil", 0L)
+              fun dndUsedToday(c: Context) =
+                  c.getSharedPreferences("funk", Context.MODE_PRIVATE).getString("dndDay", "") == java.time.LocalDate.now().toString()
+              fun startDnd(c: Context): Long {
+                  val u = System.currentTimeMillis() + 600000L
+                  c.getSharedPreferences("funk", Context.MODE_PRIVATE).edit()
+                      .putString("dndDay", java.time.LocalDate.now().toString()).putLong("dndUntil", u).apply()
+                  return u
+              }
+              fun endDnd(c: Context) {
+                  c.getSharedPreferences("funk", Context.MODE_PRIVATE).edit().putLong("dndUntil", 0L).apply()
+              }
               private fun p(c: Context) = c.getSharedPreferences("funk", Context.MODE_PRIVATE)
               fun number(c: Context): String {
                   val s = p(c).getString("num", null)
@@ -420,7 +500,7 @@ jobs:
               }
               Box(
                   Modifier.fillMaxSize()
-                      .background(Brush.verticalGradient(listOf(Color(0xFF05070D), Color(0xFF0D1426), Color(0xFF05070D))))
+                      .background(Brush.radialGradient(listOf(Color(0xFF18276B), Color(0xFF070A14), Color(0xFF05070D)), center = androidx.compose.ui.geometry.Offset(500f, 0f), radius = 1800f))
                       .systemBarsPadding()
               ) {
                   if (ok) Home() else Welcome {
@@ -496,6 +576,12 @@ jobs:
               val clip = LocalClipboardManager.current
               fun nameOf(n: String) = contacts.firstOrNull { it.first == n }?.second ?: fmt(n)
               val who = inc
+              val last by Radio.lastCaller.collectAsState()
+              var dnd by remember { mutableStateOf(Store.dndUntil(ctx)) }
+              var now by remember { mutableStateOf(System.currentTimeMillis()) }
+              LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(1000) } }
+              val dndOn = now < dnd
+              val usedToday = Store.dndUsedToday(ctx)
 
               Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
                   Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -517,11 +603,70 @@ jobs:
                       Spacer(Modifier.height(6.dp))
                       Text(fmt(me), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace)
                   }
-                  Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
-                      if (who != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                          Eq()
-                          Spacer(Modifier.width(10.dp))
-                          Text(nameOf(who) + " spricht", color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                  val lc = last
+                  Spacer(Modifier.height(10.dp))
+                  if (dndOn) {
+                      Glass(Modifier.fillMaxWidth()) {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              Column {
+                                  Text("NICHT STÖREN AKTIV", color = Color(0xFFFFA000), fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
+                                  val left = maxOf((dnd - now) / 1000, 0L)
+                                  Text("%02d:%02d".format(left / 60, left % 60), color = Color.White, fontSize = 30.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                              }
+                              Spacer(Modifier.weight(1f))
+                              TextButton(onClick = { Radio.dndUntil = 0L; dnd = 0L; Store.endDnd(ctx) }) { Text("BEENDEN", color = Neon, fontWeight = FontWeight.Bold) }
+                          }
+                      }
+                  } else if (who != null) {
+                      Glass(Modifier.fillMaxWidth()) {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              Eq()
+                              Spacer(Modifier.width(14.dp))
+                              Column {
+                                  Text("ANRUF VON", color = Color(0xFF00E676), fontSize = 11.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
+                                  Text(nameOf(who), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black, maxLines = 1)
+                                  Text(fmt(who), color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                              }
+                          }
+                      }
+                  } else if (lc != null) {
+                      Glass(Modifier.fillMaxWidth()) {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                              Column(Modifier.weight(1f)) {
+                                  Text("LETZTER ANRUF", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
+                                  Text(nameOf(lc), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                              }
+                              if (contacts.none { it.first == lc }) TextButton(onClick = {
+                                  contacts = contacts + (lc to ("Neu " + lc.takeLast(4)))
+                                  Store.save(ctx, contacts)
+                              }) { Text("SPEICHERN", color = Muted, fontSize = 12.sp) }
+                              Button(
+                                  onClick = { target = lc },
+                                  colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
+                                  shape = RoundedCornerShape(50),
+                                  contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
+                              ) { Text("ANTWORTEN", fontWeight = FontWeight.Black, fontSize = 12.sp) }
+                          }
+                      }
+                  } else {
+                      Text("Warte auf Anrufe …", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 14.dp))
+                  }
+                  if (!dndOn) {
+                      Spacer(Modifier.height(8.dp))
+                      Button(
+                          onClick = { dnd = Store.startDnd(ctx); Radio.dndUntil = dnd; now = System.currentTimeMillis() },
+                          enabled = !usedToday,
+                          colors = ButtonDefaults.buttonColors(
+                              containerColor = Violet, contentColor = Color.White,
+                              disabledContainerColor = Color.White.copy(alpha = 0.08f), disabledContentColor = Muted
+                          ),
+                          shape = RoundedCornerShape(50),
+                          modifier = Modifier.fillMaxWidth()
+                      ) {
+                          Text(
+                              if (usedToday) "NICHT STÖREN · HEUTE SCHON GENUTZT" else "NICHT STÖREN · 10 MIN (1× PRO TAG)",
+                              fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+                          )
                       }
                   }
                   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -599,6 +744,8 @@ jobs:
               val colors = if (active) listOf(Color(0xFFFF3D71), Color(0xFFFF8A00))
               else if (enabled) listOf(Neon, Violet) else listOf(Color(0xFF3A4256), Color(0xFF2A3042))
               Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+                  Box(Modifier.size(size * 0.92f).border(1.dp, colors[0].copy(alpha = 0.18f), CircleShape))
+                  Box(Modifier.size(size * 0.82f).border(1.dp, colors[0].copy(alpha = 0.32f), CircleShape))
                   if (active) Box(
                       Modifier.size(size * 0.7f).scale(pulse).clip(CircleShape)
                           .background(Color(0xFFFF3D71).copy(alpha = 0.2f))
