@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  # HIER die URL deiner funke.php eintragen (https!)
+  FUNKE_SERVER: "https://DEINE-DOMAIN.de/funke.php"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -186,6 +190,7 @@ jobs:
               private const val CH = 1280
               private const val BROKER = "tcp://broker.hivemq.com:1883"
               private const val PREFIX = "funkapp1/ch/"
+              private const val SERVER = "__SERVER__"
 
               val connected = MutableStateFlow(false)
               val incoming = MutableStateFlow<String?>(null)
@@ -298,6 +303,25 @@ jobs:
                       .build()
               }
 
+              private fun post(action: String, body: String): String? = try {
+                  val c = java.net.URL(SERVER + "?api=" + action).openConnection() as java.net.HttpURLConnection
+                  c.requestMethod = "POST"
+                  c.doOutput = true
+                  c.connectTimeout = 6000
+                  c.readTimeout = 6000
+                  c.outputStream.use { it.write(body.toByteArray()) }
+                  c.inputStream.bufferedReader().readText()
+              } catch (e: Exception) { null }
+
+              fun register(num: String, sec: String): String? {
+                  val r = post("appreg", "{\"number\":\"" + num + "\",\"sec\":\"" + sec + "\"}") ?: return null
+                  return if (r.contains("conflict")) "conflict" else if (r.contains("\"ok\":1")) "ok" else null
+              }
+
+              fun check(num: String): Boolean? {
+                  val r = post("check", "{\"number\":\"" + num + "\"}") ?: return null
+                  return r.contains("\"valid\":true")
+              }
               private fun halfVolume() {
                   try {
                       val am = app.getSystemService(AudioManager::class.java)
@@ -426,7 +450,14 @@ jobs:
                   )
                   Radio.app = applicationContext
                   Radio.dndUntil = Store.dndUntil(this)
-                  Radio.start(Store.number(this))
+                  Thread {
+                      var tries = 0
+                      while (tries++ < 5) {
+                          val r = Radio.register(Store.number(this), Store.secret(this))
+                          if (r == "conflict") Store.reroll(this) else break
+                      }
+                      Radio.start(Store.number(this))
+                  }.start()
                   return START_STICKY
               }
 
@@ -524,6 +555,18 @@ jobs:
                       p(c).getString("log", "")!!.lines().filter { it.isNotBlank() }
                   p(c).edit().putString("log", l.take(30).joinToString("\n")).apply()
               }
+              fun secret(c: Context): String {
+                  val s = p(c).getString("sec", null)
+                  if (s != null) return s
+                  val n = java.util.UUID.randomUUID().toString().replace("-", "")
+                  p(c).edit().putString("sec", n).apply()
+                  return n
+              }
+              fun reroll(c: Context): String {
+                  val n = (10000000..99999999).random().toString()
+                  p(c).edit().putString("num", n).apply()
+                  return n
+              }
               fun contacts(c: Context): List<Pair<String, String>> =
                   p(c).getString("c", "")!!.lines().filter { it.contains(";") }
                       .map { it.substringBefore(";") to it.substringAfter(";") }
@@ -532,7 +575,7 @@ jobs:
               }
           }
 
-          fun fmt(n: String) = n.chunked(4).joinToString(" ")
+          fun fmt(n: String) = if (n.startsWith("WEB")) "Web-Anrufer" else n.chunked(4).joinToString(" ")
 
           class MainActivity : ComponentActivity() {
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -679,6 +722,13 @@ jobs:
               var all by remember { mutableStateOf(false) }
               var only by remember { mutableStateOf(Store.only(ctx)) }
               var showLog by remember { mutableStateOf(false) }
+              val valid = remember { mutableStateMapOf<String, Boolean>() }
+              LaunchedEffect(contacts) {
+                  for (c in contacts) {
+                      val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Radio.check(c.first) }
+                      if (r != null) valid[c.first] = r
+                  }
+              }
               LaunchedEffect(only) { Radio.onlyContacts = only }
 
               Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
@@ -747,11 +797,11 @@ jobs:
                                   Text("LETZTER ANRUF", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
                                   Text(nameOf(lc), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                               }
-                              if (contacts.none { it.first == lc }) TextButton(onClick = {
+                              if (contacts.none { it.first == lc } && !lc.startsWith("WEB")) TextButton(onClick = {
                                   contacts = contacts + (lc to ("Neu " + lc.takeLast(4)))
                                   Store.save(ctx, contacts)
                               }) { Text("SPEICHERN", color = Muted, fontSize = 12.sp) }
-                              Button(
+                              if (!lc.startsWith("WEB")) Button(
                                   onClick = { target = lc },
                                   colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
                                   shape = RoundedCornerShape(50),
@@ -787,7 +837,7 @@ jobs:
                           Text(if (all) contacts.size.toString() + " Kontakte" else target?.let { fmt(it) } ?: "unten Kontakt hinzufügen", color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                           Ptt(
                               active = talking,
-                              enabled = (if (all) contacts.isNotEmpty() else target != null) && online,
+                              enabled = (if (all) contacts.isNotEmpty() else target != null) && online && (all || valid[target ?: ""] != false),
                               size = s,
                               onDown = {
                                   haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -833,7 +883,15 @@ jobs:
                                   }
                                   .padding(horizontal = 18.dp, vertical = 12.dp)
                           ) {
-                              Text(c.second, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
+                              Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier.size(8.dp).clip(CircleShape).background(
+                                        when (valid[c.first]) { true -> Color(0xFF00E676); false -> Color(0xFFFF5252); else -> Muted }
+                                    )
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(c.second, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
+                            }
                               Text(fmt(c.first), color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                           }
                       }
@@ -897,6 +955,17 @@ jobs:
               var num by remember { mutableStateOf("") }
               var name by remember { mutableStateOf("") }
               var err by remember { mutableStateOf("") }
+              var state by remember { mutableStateOf<Boolean?>(null) }
+              var checked by remember { mutableStateOf(false) }
+              LaunchedEffect(num) {
+                  state = null
+                  checked = false
+                  if (num.length == 8) {
+                      kotlinx.coroutines.delay(300)
+                      state = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Radio.check(num) }
+                      checked = true
+                  }
+              }
               AlertDialog(
                   onDismissRequest = onDismiss,
                   containerColor = Color(0xFF111A2E),
@@ -910,6 +979,14 @@ jobs:
                               label = { Text("Nummer (8 Ziffern)") }, singleLine = true,
                               keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                           )
+                          Spacer(Modifier.height(6.dp))
+                          when {
+                              num.length < 8 -> Text("8 Ziffern eingeben", color = Muted, fontSize = 13.sp)
+                              !checked -> Text("Prüfe Nummer …", color = Muted, fontSize = 13.sp)
+                              state == true -> Text("✓ Gültige Nummer · erreichbar", color = Color(0xFF00E676), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                              state == false -> Text("✗ Keine gültige Nummer", color = Color(0xFFFF5252), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                              else -> Text("Server nicht erreichbar, Nummer ungeprüft", color = Color(0xFFFFA000), fontSize = 13.sp)
+                          }
                           Spacer(Modifier.height(8.dp))
                           OutlinedTextField(
                               value = name, onValueChange = { name = it.take(20) },
@@ -926,6 +1003,7 @@ jobs:
                           when {
                               num.length != 8 -> err = "Die Nummer hat 8 Ziffern."
                               num == me -> err = "Das ist deine eigene Nummer."
+                              checked && state == false -> err = "Diese Nummer ist nicht gültig."
                               else -> onAdd(num, name.ifBlank { fmt(num) })
                           }
                       }) { Text("Speichern", color = Neon, fontWeight = FontWeight.Bold) }
@@ -934,6 +1012,9 @@ jobs:
               )
           }
           EOF
+
+      - name: Server-URL eintragen
+        run: sed -i "s|__SERVER__|$FUNKE_SERVER|" app/src/main/java/app/funk/Radio.kt
 
       - name: APK bauen
         run: gradle assembleDebug --no-daemon --stacktrace
