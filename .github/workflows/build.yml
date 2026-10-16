@@ -49,8 +49,8 @@ jobs:
                   applicationId 'com.example.irpush'
                   minSdk 26
                   targetSdk 34
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '2.0'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -64,8 +64,8 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-feature android:name="android.hardware.usb.host" android:required="false" />
-              <application android:label="IR Push" android:theme="@android:style/Theme.Material.Light">
-                  <activity android:name=".MainActivity" android:exported="true">
+              <application android:label="IR Push" android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -78,12 +78,16 @@ jobs:
           cat > app/src/main/java/com/example/irpush/MainActivity.kt <<'EOF'
           package com.example.irpush
 
+          import android.animation.ValueAnimator
           import android.app.Activity
           import android.app.PendingIntent
           import android.content.BroadcastReceiver
           import android.content.Context
           import android.content.Intent
           import android.content.IntentFilter
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
           import android.hardware.usb.UsbConstants
           import android.hardware.usb.UsbDevice
           import android.hardware.usb.UsbDeviceConnection
@@ -93,33 +97,85 @@ jobs:
           import android.os.Bundle
           import android.os.Handler
           import android.os.Looper
+          import android.view.Gravity
+          import android.view.HapticFeedbackConstants
           import android.view.MotionEvent
-          import android.widget.Button
+          import android.view.View
+          import android.view.animation.LinearInterpolator
           import android.widget.EditText
+          import android.widget.FrameLayout
           import android.widget.LinearLayout
           import android.widget.TextView
 
           class MainActivity : Activity() {
+
               private val ACTION = "com.example.irpush.USB_PERMISSION"
+              private val BG = Color.parseColor("#0A0E1A")
+              private val CARD = Color.parseColor("#141B2D")
+              private val CYAN = Color.parseColor("#00E5FF")
+              private val PINK = Color.parseColor("#FF2E93")
+              private val GREEN = Color.parseColor("#00E676")
+              private val RED = Color.parseColor("#FF5252")
+              private val GREY = Color.parseColor("#6B7280")
+              private val WHITE = Color.parseColor("#F3F4F6")
+
               private lateinit var usb: UsbManager
-              private lateinit var info: TextView
+              private lateinit var dot: View
+              private lateinit var stMain: TextView
+              private lateinit var stSub: TextView
+              private lateinit var live: TextView
+              private lateinit var stats: TextView
               private lateinit var hex: EditText
+              private lateinit var ring: View
+              private lateinit var btn: TextView
+              private lateinit var btnIdle: GradientDrawable
+              private lateinit var btnDown: GradientDrawable
+
               private var dev: UsbDevice? = null
               private var conn: UsbDeviceConnection? = null
               private var ep: UsbEndpoint? = null
+              private var pressed = false
+              private var okCount = 0
+              private var failCount = 0
+              private var pulse: ValueAnimator? = null
               private val h = Handler(Looper.getMainLooper())
+
               private val rep = object : Runnable {
-                  override fun run() { send(); h.postDelayed(this, 100) }
+                  override fun run() {
+                      if (!pressed) return
+                      send()
+                      h.postDelayed(this, 100)
+                  }
               }
+
               private val rcv = object : BroadcastReceiver() {
                   override fun onReceive(c: Context, i: Intent) {
                       if (i.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) open()
-                      else info.text = "Zugriff verweigert"
+                      else status(RED, "ZUGRIFF VERWEIGERT", "Bitte USB-Erlaubnis bestätigen")
                   }
+              }
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun box(c: Int, r: Int, stroke: Int = 0, sc: Int = 0) = GradientDrawable().apply {
+                  setColor(c); cornerRadius = dp(r).toFloat()
+                  if (stroke > 0) setStroke(dp(stroke), sc)
+              }
+
+              private fun oval(c: Int, stroke: Int = 0, sc: Int = 0) = GradientDrawable().apply {
+                  shape = GradientDrawable.OVAL; setColor(c)
+                  if (stroke > 0) setStroke(dp(stroke), sc)
+              }
+
+              private fun text(t: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
+                  text = t; textSize = size; setTextColor(color)
+                  if (bold) typeface = Typeface.DEFAULT_BOLD
               }
 
               override fun onCreate(s: Bundle?) {
                   super.onCreate(s)
+                  window.statusBarColor = BG
+                  window.navigationBarColor = BG
                   usb = getSystemService(Context.USB_SERVICE) as UsbManager
                   val f = IntentFilter(ACTION)
                   if (Build.VERSION.SDK_INT >= 33) registerReceiver(rcv, f, Context.RECEIVER_NOT_EXPORTED)
@@ -127,32 +183,166 @@ jobs:
 
                   val root = LinearLayout(this)
                   root.orientation = LinearLayout.VERTICAL
-                  root.setPadding(40, 80, 40, 40)
-                  info = TextView(this); info.text = "Kein Gerät verbunden"; info.textSize = 16f
-                  val scan = Button(this); scan.text = "USB-Gerät suchen"
-                  hex = EditText(this); hex.hint = "Hex-Bytes, z.B. 01 A5 3C"
-                  val push = Button(this); push.text = "GEDRÜCKT HALTEN = SENDEN"
-                  push.textSize = 20f; push.setPadding(0, 80, 0, 80)
-                  root.addView(info); root.addView(scan); root.addView(hex); root.addView(push)
-                  setContentView(root)
+                  root.setBackgroundColor(BG)
+                  root.setPadding(dp(20), dp(28), dp(20), dp(20))
 
+                  val title = text("IR PUSH", 30f, CYAN, true)
+                  title.letterSpacing = 0.25f
+                  val sub = text("Tippen = Einzelsignal  ·  Halten = Dauersignal", 13f, GREY)
+                  root.addView(title)
+                  root.addView(sub)
+
+                  // Status-Karte
+                  val card = LinearLayout(this)
+                  card.orientation = LinearLayout.HORIZONTAL
+                  card.gravity = Gravity.CENTER_VERTICAL
+                  card.background = box(CARD, 18)
+                  card.setPadding(dp(18), dp(16), dp(18), dp(16))
+                  dot = View(this)
+                  dot.background = oval(GREY)
+                  card.addView(dot, LinearLayout.LayoutParams(dp(16), dp(16)))
+                  val col = LinearLayout(this)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(dp(14), 0, 0, 0)
+                  stMain = text("KEIN GERÄT", 17f, WHITE, true)
+                  stSub = text("USB-C-IR-Gerät anstecken", 12f, GREY)
+                  col.addView(stMain); col.addView(stSub)
+                  card.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+                  val scan = text("SUCHEN", 12f, CYAN, true)
+                  scan.background = box(Color.TRANSPARENT, 20, 2, CYAN)
+                  scan.setPadding(dp(16), dp(8), dp(16), dp(8))
                   scan.setOnClickListener { scanDevice() }
-                  push.setOnTouchListener { _, e ->
+                  card.addView(scan)
+                  val lp = LinearLayout.LayoutParams(-1, -2); lp.topMargin = dp(22)
+                  root.addView(card, lp)
+
+                  // Hex-Eingabe
+                  val hexCard = LinearLayout(this)
+                  hexCard.orientation = LinearLayout.VERTICAL
+                  hexCard.background = box(CARD, 18)
+                  hexCard.setPadding(dp(18), dp(14), dp(18), dp(8))
+                  hexCard.addView(text("SIGNAL (HEX-BYTES)", 11f, GREY, true))
+                  hex = EditText(this)
+                  hex.hint = "z.B. A1 F1 00 FF"
+                  hex.setHintTextColor(Color.parseColor("#374151"))
+                  hex.setTextColor(WHITE)
+                  hex.textSize = 20f
+                  hex.typeface = Typeface.MONOSPACE
+                  hex.setBackgroundColor(Color.TRANSPARENT)
+                  hex.setSingleLine()
+                  hexCard.addView(hex)
+                  val lp2 = LinearLayout.LayoutParams(-1, -2); lp2.topMargin = dp(12)
+                  root.addView(hexCard, lp2)
+
+                  // Live-Anzeige
+                  live = text("", 18f, PINK, true)
+                  live.gravity = Gravity.CENTER
+                  live.letterSpacing = 0.2f
+                  val lp3 = LinearLayout.LayoutParams(-1, 0, 0.35f)
+                  lp3.gravity = Gravity.CENTER
+                  live.gravity = Gravity.CENTER
+                  root.addView(live, lp3)
+
+                  // Großer Knopf mit Ring
+                  val stack = FrameLayout(this)
+                  ring = View(this)
+                  ring.background = oval(Color.TRANSPARENT, 4, PINK)
+                  ring.alpha = 0.0f
+                  stack.addView(ring, FrameLayout.LayoutParams(dp(270), dp(270), Gravity.CENTER))
+
+                  btnIdle = oval(Color.parseColor("#0F2A3A"), 4, CYAN)
+                  btnDown = oval(PINK, 4, Color.WHITE)
+                  btn = text("SENDEN", 26f, WHITE, true)
+                  btn.letterSpacing = 0.2f
+                  btn.gravity = Gravity.CENTER
+                  btn.background = btnIdle
+                  btn.elevation = dp(10).toFloat()
+                  stack.addView(btn, FrameLayout.LayoutParams(dp(210), dp(210), Gravity.CENTER))
+                  val lp4 = LinearLayout.LayoutParams(-1, 0, 1f)
+                  root.addView(stack, lp4)
+
+                  stats = text("", 13f, GREY)
+                  stats.gravity = Gravity.CENTER
+                  root.addView(stats, LinearLayout.LayoutParams(-1, -2))
+
+                  setContentView(root)
+                  updateStats()
+
+                  btn.setOnTouchListener { v, e ->
                       when (e.action) {
-                          MotionEvent.ACTION_DOWN -> h.post(rep)
-                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> h.removeCallbacks(rep)
+                          MotionEvent.ACTION_DOWN -> pressDown(v)
+                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> pressUp(v)
                       }
                       true
                   }
                   scanDevice()
               }
 
+              private fun pressDown(v: View) {
+                  pressed = true
+                  v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                  btn.background = btnDown
+                  btn.text = "SENDET"
+                  btn.animate().scaleX(0.93f).scaleY(0.93f).setDuration(90).start()
+                  live.setTextColor(PINK)
+                  live.text = "● SENDET …"
+                  ring.alpha = 0.9f
+                  pulse?.cancel()
+                  pulse = ValueAnimator.ofFloat(0f, 1f).apply {
+                      duration = 450
+                      repeatCount = ValueAnimator.INFINITE
+                      interpolator = LinearInterpolator()
+                      addUpdateListener {
+                          val p = it.animatedValue as Float
+                          val sc = 0.85f + 0.2f * p
+                          ring.scaleX = sc; ring.scaleY = sc
+                          ring.alpha = 1f - p
+                      }
+                      start()
+                  }
+                  send()
+                  h.postDelayed(rep, 150)
+              }
+
+              private fun pressUp(v: View) {
+                  pressed = false
+                  h.removeCallbacks(rep)
+                  pulse?.cancel()
+                  ring.alpha = 0f
+                  ring.scaleX = 1f; ring.scaleY = 1f
+                  btn.background = btnIdle
+                  btn.text = "SENDEN"
+                  btn.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                  v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                  if (conn != null && okCount > 0 && lastOk) {
+                      live.setTextColor(GREEN)
+                      live.text = "✓ GESENDET"
+                  }
+              }
+
+              private var lastOk = false
+
+              private fun status(color: Int, main: String, subText: String) {
+                  dot.background = oval(color)
+                  stMain.text = main
+                  stSub.text = subText
+              }
+
+              private fun updateStats() {
+                  stats.text = "Gesendet: $okCount     Fehler: $failCount"
+              }
+
               private fun scanDevice() {
                   val d = usb.deviceList.values.firstOrNull()
                   dev = d
-                  if (d == null) { info.text = "Kein USB-Gerät gefunden"; return }
+                  if (d == null) {
+                      conn = null; ep = null
+                      status(GREY, "KEIN GERÄT", "USB-C-IR-Gerät anstecken, dann SUCHEN")
+                      return
+                  }
                   if (usb.hasPermission(d)) open()
                   else {
+                      status(CYAN, "WARTE AUF ERLAUBNIS", "Bitte im Dialog bestätigen")
                       val pi = PendingIntent.getBroadcast(
                           this, 0, Intent(ACTION).setPackage(packageName), PendingIntent.FLAG_MUTABLE)
                       usb.requestPermission(d, pi)
@@ -161,7 +351,8 @@ jobs:
 
               private fun open() {
                   val d = dev ?: return
-                  val c = usb.openDevice(d) ?: run { info.text = "Öffnen fehlgeschlagen"; return }
+                  val c = usb.openDevice(d)
+                  if (c == null) { status(RED, "ÖFFNEN FEHLGESCHLAGEN", "Gerät neu einstecken"); return }
                   for (n in 0 until d.interfaceCount) {
                       val itf = d.getInterface(n)
                       for (k in 0 until itf.endpointCount) {
@@ -171,24 +362,55 @@ jobs:
                                e.type == UsbConstants.USB_ENDPOINT_XFER_INT)) {
                               c.claimInterface(itf, true)
                               conn = c; ep = e
-                              info.text = "Verbunden: %04X:%04X (%s)".format(d.vendorId, d.productId, d.productName ?: "?")
+                              status(GREEN, "VERBUNDEN",
+                                  String.format("%04X:%04X  %s", d.vendorId, d.productId, d.productName ?: ""))
                               return
                           }
                       }
                   }
-                  info.text = "Kein Sende-Endpunkt gefunden: %04X:%04X".format(d.vendorId, d.productId)
+                  status(RED, "KEIN SENDE-KANAL",
+                      String.format("%04X:%04X hat keinen OUT-Endpunkt", d.vendorId, d.productId))
               }
 
               private fun send() {
-                  val c = conn ?: return
-                  val e = ep ?: return
+                  val c = conn
+                  val e = ep
+                  if (c == null || e == null) {
+                      fail("KEIN GERÄT – NICHT GESENDET")
+                      return
+                  }
                   val clean = hex.text.toString().replace(Regex("[^0-9A-Fa-f]"), "")
                   val b = clean.chunked(2).filter { it.length == 2 }.map { it.toInt(16).toByte() }.toByteArray()
-                  if (b.isNotEmpty()) c.bulkTransfer(e, b, b.size, 200)
+                  if (b.isEmpty()) {
+                      fail("BITTE HEX EINGEBEN")
+                      return
+                  }
+                  val r = c.bulkTransfer(e, b, b.size, 200)
+                  if (r >= 0) {
+                      lastOk = true
+                      okCount++
+                      live.setTextColor(PINK)
+                      live.text = "● SENDET …  (" + okCount + ")"
+                      dot.alpha = 0.4f
+                      dot.animate().alpha(1f).setDuration(80).start()
+                  } else {
+                      fail("FEHLER – NICHT GESENDET")
+                  }
+                  updateStats()
+              }
+
+              private fun fail(msg: String) {
+                  lastOk = false
+                  failCount++
+                  live.setTextColor(RED)
+                  live.text = "✗ " + msg
+                  updateStats()
               }
 
               override fun onDestroy() {
+                  pressed = false
                   h.removeCallbacks(rep)
+                  pulse?.cancel()
                   unregisterReceiver(rcv)
                   conn?.close()
                   super.onDestroy()
