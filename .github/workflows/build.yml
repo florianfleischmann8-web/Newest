@@ -104,8 +104,9 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
               <application
-                  android:label="Funk"
-                  android:icon="@android:drawable/sym_def_app_icon"
+                  android:label="Funke"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:theme="@android:style/Theme.Material.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
@@ -121,6 +122,45 @@ jobs:
           </manifest>
           EOF
 
+          mkdir -p app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
+
+          cat > app/src/main/res/drawable/ic_bg.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:aapt="http://schemas.android.com/aapt"
+              android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:pathData="M0,0h108v108h-108z">
+                  <aapt:attr name="android:fillColor">
+                      <gradient android:startX="0" android:startY="0" android:endX="108" android:endY="108" android:type="linear">
+                          <item android:offset="0" android:color="#FF0A1030"/>
+                          <item android:offset="0.55" android:color="#FF4A2BD8"/>
+                          <item android:offset="1" android:color="#FF00B8D9"/>
+                      </gradient>
+                  </aapt:attr>
+              </path>
+              <path android:pathData="M54,54m-31,0a31,31 0 1,0 62,0a31,31 0 1,0 -62,0" android:fillColor="#22FFFFFF"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+              <path android:pathData="M58,22 L38,58 L52,58 L47,86 L70,48 L55,48 Z" android:fillColor="#FFFFFFFF"/>
+              <path android:pathData="M34,40 Q27,54 34,68" android:strokeColor="#FF00E5FF" android:strokeWidth="3.5" android:strokeLineCap="round" android:fillColor="#00000000"/>
+              <path android:pathData="M27,33 Q16,54 27,75" android:strokeColor="#9900E5FF" android:strokeWidth="3" android:strokeLineCap="round" android:fillColor="#00000000"/>
+              <path android:pathData="M74,40 Q81,54 74,68" android:strokeColor="#FF00E5FF" android:strokeWidth="3.5" android:strokeLineCap="round" android:fillColor="#00000000"/>
+              <path android:pathData="M81,33 Q92,54 81,75" android:strokeColor="#9900E5FF" android:strokeWidth="3" android:strokeLineCap="round" android:fillColor="#00000000"/>
+          </vector>
+          EOF
+
+          for n in ic_launcher ic_launcher_round; do
+          cat > app/src/main/res/mipmap-anydpi-v26/$n.xml <<'EOF'
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_bg"/>
+              <foreground android:drawable="@drawable/ic_fg"/>
+              <monochrome android:drawable="@drawable/ic_fg"/>
+          </adaptive-icon>
+          EOF
+          done
           cat > app/src/main/java/app/funk/Radio.kt <<'EOF'
           package app.funk
 
@@ -159,6 +199,8 @@ jobs:
               @Volatile var dndUntil = 0L
               lateinit var app: Context
               private var prevVol = -1
+              @Volatile var onlyContacts = false
+              private var lastDrop = 0L
 
               private var me = ""
               private var client: MqttClient? = null
@@ -203,7 +245,14 @@ jobs:
               override fun messageArrived(topic: String?, m: MqttMessage?) {
                   val p = m?.payload ?: return
                   if (p.size < 9) return
-                  if (System.currentTimeMillis() < dndUntil) return
+                  val from0 = String(p, 0, 8)
+                  val nowMs = System.currentTimeMillis()
+                  val stranger = onlyContacts && Store.contacts(app).none { it.first == from0 }
+                  if (nowMs < dndUntil || stranger) {
+                      if (p[8].toInt() == 0 && nowMs - lastDrop > 5000) Store.addLog(app, from0, true)
+                      lastDrop = nowMs
+                      return
+                  }
                   val from = String(p, 0, 8)
                   if (p[8].toInt() == 1) {
                       main.removeCallbacks(idle)
@@ -273,10 +322,8 @@ jobs:
 
               private fun callStart(from: String) {
                   try {
+                      Store.addLog(app, from, false)
                       val name = Store.contacts(app).firstOrNull { it.first == from }?.second ?: fmt(from)
-                      val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 60)
-                      tg.startTone(ToneGenerator.TONE_PROP_BEEP, 180)
-                      main.postDelayed({ tg.release() }, 500)
                       app.getSystemService(Vibrator::class.java)
                           .vibrate(VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE))
                       val pi = android.app.PendingIntent.getActivity(
@@ -310,17 +357,19 @@ jobs:
                               maxOf(min, CH * 4)
                           )
                           r.startRecording()
-                          val topic = PREFIX + target
+                          val topics = target.split(",").map { PREFIX + it }
                           val buf = ByteArray(9 + CH)
                           me.toByteArray().copyInto(buf)
-                          while (sending) {
+                          val t0 = System.currentTimeMillis()
+                          while (sending && System.currentTimeMillis() - t0 < 60000) {
                               val n = r.read(buf, 9, CH)
-                              if (n > 0) client?.publish(topic, buf.copyOf(9 + n), 0, false)
+                              if (n > 0) { val pk = buf.copyOf(9 + n); for (tp in topics) client?.publish(tp, pk, 0, false) }
                           }
+                          sending = false
                           val end = ByteArray(9)
                           me.toByteArray().copyInto(end)
                           end[8] = 1
-                          client?.publish(topic, end, 0, false)
+                          for (tp in topics) client?.publish(tp, end, 0, false)
                       } catch (e: Exception) {
                           sending = false
                       } finally {
@@ -363,7 +412,7 @@ jobs:
                   )
                   val n = NotificationCompat.Builder(this, "radio")
                       .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                      .setContentTitle("Funk bereit")
+                      .setContentTitle("Funke bereit")
                       .setContentText("Empfang läuft im Hintergrund")
                       .setContentIntent(pi)
                       .setOngoing(true)
@@ -416,6 +465,7 @@ jobs:
           import androidx.compose.foundation.border
           import androidx.compose.foundation.gestures.detectTapGestures
           import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
           import androidx.compose.foundation.lazy.LazyRow
           import androidx.compose.foundation.lazy.items
           import androidx.compose.foundation.shape.CircleShape
@@ -469,6 +519,16 @@ jobs:
                   p(c).edit().putString("num", n).apply()
                   return n
               }
+              fun only(c: Context) = p(c).getBoolean("only", false)
+              fun setOnly(c: Context, v: Boolean) { p(c).edit().putBoolean("only", v).apply() }
+              fun logs(c: Context): List<Triple<String, Long, Boolean>> =
+                  p(c).getString("log", "")!!.lines().filter { it.count { ch -> ch == ';' } == 2 }
+                      .map { val s = it.split(";"); Triple(s[0], s[1].toLongOrNull() ?: 0L, s[2] == "1") }
+              fun addLog(c: Context, n: String, missed: Boolean) {
+                  val l = listOf(n + ";" + System.currentTimeMillis() + ";" + (if (missed) "1" else "0")) +
+                      p(c).getString("log", "")!!.lines().filter { it.isNotBlank() }
+                  p(c).edit().putString("log", l.take(30).joinToString("\n")).apply()
+              }
               fun contacts(c: Context): List<Pair<String, String>> =
                   p(c).getString("c", "")!!.lines().filter { it.contains(";") }
                       .map { it.substringBefore(";") to it.substringAfter(";") }
@@ -519,7 +579,7 @@ jobs:
                   verticalArrangement = Arrangement.Center,
                   horizontalAlignment = Alignment.CenterHorizontally
               ) {
-                  Text("FUNK", fontSize = 56.sp, fontWeight = FontWeight.Black, letterSpacing = 12.sp, color = Neon)
+                  Text("FUNKE", fontSize = 56.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp, color = Neon)
                   Spacer(Modifier.height(16.dp))
                   Text(
                       "Walkie-Talkie in Echtzeit.\nTaste halten, sprechen, fertig. Der andere muss nichts annehmen.",
@@ -548,6 +608,45 @@ jobs:
                       .border(1.dp, Brush.linearGradient(listOf(Neon.copy(alpha = 0.5f), Violet.copy(alpha = 0.2f))), RoundedCornerShape(22.dp))
                       .padding(16.dp),
                   content = content
+              )
+          }
+
+          @Composable
+          fun Tog(label: String, on: Boolean, click: () -> Unit) {
+              Text(
+                  label, color = if (on) Color.Black else Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
+                  modifier = Modifier.clip(RoundedCornerShape(50))
+                      .background(if (on) Neon else Color.White.copy(alpha = 0.08f))
+                      .pointerInput(on) { detectTapGestures { click() } }
+                      .padding(horizontal = 14.dp, vertical = 8.dp)
+              )
+          }
+
+          @Composable
+          fun LogDialog(ctx: Context, contacts: List<Pair<String, String>>, onDismiss: () -> Unit) {
+              val log = remember { Store.logs(ctx) }
+              val df = remember { java.text.SimpleDateFormat("dd.MM. HH:mm", java.util.Locale.GERMANY) }
+              AlertDialog(
+                  onDismissRequest = onDismiss, containerColor = Color(0xFF111A2E),
+                  titleContentColor = Color.White, textContentColor = Color.White,
+                  title = { Text("Verlauf") },
+                  text = {
+                      if (log.isEmpty()) Text("Noch keine Anrufe.", color = Muted)
+                      else LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                          items(log) { e ->
+                              Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                  Column(Modifier.weight(1f)) {
+                                      Text(contacts.firstOrNull { it.first == e.first }?.second ?: fmt(e.first), color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
+                                      Text(
+                                          df.format(java.util.Date(e.second)) + (if (e.third) " · verpasst" else ""),
+                                          color = if (e.third) Color(0xFFFFA000) else Muted, fontSize = 12.sp
+                                      )
+                                  }
+                              }
+                          }
+                      }
+                  },
+                  confirmButton = { TextButton(onClick = onDismiss) { Text("Schließen", color = Neon) } }
               )
           }
 
@@ -582,10 +681,14 @@ jobs:
               LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(1000) } }
               val dndOn = now < dnd
               val usedToday = Store.dndUsedToday(ctx)
+              var all by remember { mutableStateOf(false) }
+              var only by remember { mutableStateOf(Store.only(ctx)) }
+              var showLog by remember { mutableStateOf(false) }
+              LaunchedEffect(only) { Radio.onlyContacts = only }
 
               Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
                   Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                      Text("FUNK", fontSize = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 8.sp, color = Neon)
+                      Text("⚡FUNKE", fontSize = 24.sp, fontWeight = FontWeight.Black, letterSpacing = 8.sp, color = Neon)
                       Spacer(Modifier.weight(1f))
                       Row(
                           Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.08f))
@@ -602,6 +705,19 @@ jobs:
                       Text("DEINE NUMMER · TIPPEN ZUM KOPIEREN", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
                       Spacer(Modifier.height(6.dp))
                       Text(fmt(me), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace)
+                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                          TextButton(
+                              onClick = {
+                                  val i = Intent(Intent.ACTION_SEND).setType("text/plain")
+                                      .putExtra(Intent.EXTRA_TEXT, "Meine Funke-Nummer: " + fmt(me) + " - funk mich an!")
+                                  ctx.startActivity(Intent.createChooser(i, "Nummer teilen"))
+                              },
+                              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                          ) { Text("TEILEN", color = Neon, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                          TextButton(onClick = { showLog = true }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                              Text("VERLAUF", color = Neon, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                          }
+                      }
                   }
                   val lc = last
                   Spacer(Modifier.height(10.dp))
@@ -672,20 +788,25 @@ jobs:
                   BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                       val s = maxOf(minOf(maxWidth, maxHeight - 90.dp), 150.dp)
                       Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                          Text(target?.let { nameOf(it) } ?: "Kein Kontakt gewählt", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                          Text(target?.let { fmt(it) } ?: "unten Kontakt hinzufügen", color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                          Text(if (all) "Rundruf an alle" else target?.let { nameOf(it) } ?: "Kein Kontakt gewählt", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                          Text(if (all) contacts.size.toString() + " Kontakte" else target?.let { fmt(it) } ?: "unten Kontakt hinzufügen", color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                           Ptt(
                               active = talking,
-                              enabled = target != null && online,
+                              enabled = (if (all) contacts.isNotEmpty() else target != null) && online,
                               size = s,
                               onDown = {
                                   haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                  target?.let { Radio.talk(it) }
+                                  if (all) Radio.talk(contacts.joinToString(",") { it.first }) else target?.let { Radio.talk(it) }
                               },
                               onUp = { Radio.stopTalk() }
                           )
                       }
                   }
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      Tog("RUNDRUF", all) { all = !all }
+                      Tog("NUR KONTAKTE", only) { only = !only; Store.setOnly(ctx, only) }
+                  }
+                  Spacer(Modifier.height(10.dp))
                   Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                       Text("KONTAKTE", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp)
                       Spacer(Modifier.weight(1f))
@@ -724,6 +845,8 @@ jobs:
                   }
                   if (contacts.isNotEmpty()) Text("Lange drücken = löschen", color = Muted.copy(alpha = 0.6f), fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
               }
+
+              if (showLog) LogDialog(ctx, contacts) { showLog = false }
 
               if (dlg) AddDialog(me, { dlg = false }) { n, name ->
                   contacts = contacts.filter { it.first != n } + (n to name.replace(";", " "))
@@ -825,7 +948,7 @@ jobs:
           <html lang="de"><head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-          <title>Funk Web</title>
+          <title>Funke Web</title><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E⚡%3C/text%3E%3C/svg%3E">
           <style>
           *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
           body{margin:0;min-height:100vh;color:#fff;font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(circle at 50% -10%,#1a2a66,#05070d 60%);display:flex;flex-direction:column;align-items:center;padding:24px 20px calc(24px + env(safe-area-inset-bottom))}
@@ -846,7 +969,7 @@ jobs:
           .foot{color:#8a94a8;font-size:12px;text-align:center;max-width:420px}
           </style></head>
           <body>
-          <h1>FUNK</h1>
+          <h1>FUNKE</h1>
           <div class="sub">Web-Sender · nur senden</div>
           <div class="pill" id="st"><span class="dot"></span><span id="stt">VERBINDE</span></div>
           <div class="card"><label>NUMMER ANRUFEN</label><input id="num" inputmode="numeric" placeholder="0000 0000" autocomplete="off"></div>
