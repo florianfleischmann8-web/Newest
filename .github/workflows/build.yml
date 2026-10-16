@@ -59,6 +59,14 @@ jobs:
           include ':app'
           EOF
 
+      - name: gradle.properties schreiben
+        run: |
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
       - name: Root build.gradle schreiben
         run: |
           cat > build.gradle << 'EOF'
