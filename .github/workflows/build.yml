@@ -196,6 +196,8 @@ jobs:
               val incoming = MutableStateFlow<String?>(null)
               val talking = MutableStateFlow(false)
               val lastCaller = MutableStateFlow<String?>(null)
+              val reg = MutableStateFlow("Registriere …")
+              val mqttErr = MutableStateFlow("")
               @Volatile var dndUntil = 0L
               lateinit var app: Context
               private var prevVol = -1
@@ -225,7 +227,7 @@ jobs:
                           connectionTimeout = 10
                       }
                       while (!c.isConnected) {
-                          try { c.connect(o) } catch (e: Exception) { Thread.sleep(3000) }
+                          try { c.connect(o); mqttErr.value = "" } catch (e: Throwable) { mqttErr.value = e.message ?: e.javaClass.simpleName; Thread.sleep(3000) }
                       }
                   }.start()
               }
@@ -307,19 +309,29 @@ jobs:
                   val c = java.net.URL(SERVER + "?api=" + action).openConnection() as java.net.HttpURLConnection
                   c.requestMethod = "POST"
                   c.doOutput = true
-                  c.connectTimeout = 6000
-                  c.readTimeout = 6000
+                  c.connectTimeout = 5000
+                  c.readTimeout = 5000
                   c.outputStream.use { it.write(body.toByteArray()) }
-                  c.inputStream.bufferedReader().readText()
-              } catch (e: Exception) { null }
+                  if (c.responseCode == 200) c.inputStream.bufferedReader().readText() else "!HTTP " + c.responseCode
+              } catch (e: Exception) { "!" + (e.message ?: e.javaClass.simpleName) }
 
               fun register(num: String, sec: String): String? {
+                  if (SERVER.contains("DEINE-DOMAIN")) { reg.value = "Server-URL in build.yml fehlt"; return null }
                   val r = post("appreg", "{\"number\":\"" + num + "\",\"sec\":\"" + sec + "\"}") ?: return null
-                  return if (r.contains("conflict")) "conflict" else if (r.contains("\"ok\":1")) "ok" else null
+                  if (r.startsWith("!")) { reg.value = "Server: " + r.substring(1); return null }
+                  if (r.contains("conflict")) return "conflict"
+                  if (r.contains("\"ok\":1")) { reg.value = "ok"; return "ok" }
+                  reg.value = "Server-Antwort ungültig (aktuelle funke.php?)"
+                  return null
+              }
+
+              fun retry() {
+                  try { Thread { register(Store.number(app), Store.secret(app)) }.start() } catch (e: Exception) { }
               }
 
               fun check(num: String): Boolean? {
                   val r = post("check", "{\"number\":\"" + num + "\"}") ?: return null
+                  if (r.startsWith("!")) return null
                   return r.contains("\"valid\":true")
               }
               private fun halfVolume() {
@@ -457,6 +469,14 @@ jobs:
                           if (r == "conflict") Store.reroll(this) else break
                       }
                       Radio.start(Store.number(this))
+                      while (Radio.reg.value != "ok") {
+                          Thread.sleep(20000)
+                          if (Radio.register(Store.number(this), Store.secret(this)) == "conflict") {
+                              Store.reroll(this)
+                              Radio.reg.value = "Nummer war doppelt: App neu starten"
+                              break
+                          }
+                      }
                   }.start()
                   return START_STICKY
               }
@@ -722,6 +742,8 @@ jobs:
               var all by remember { mutableStateOf(false) }
               var only by remember { mutableStateOf(Store.only(ctx)) }
               var showLog by remember { mutableStateOf(false) }
+              val reg by Radio.reg.collectAsState()
+              val merr by Radio.mqttErr.collectAsState()
               val valid = remember { mutableStateMapOf<String, Boolean>() }
               LaunchedEffect(contacts) {
                   for (c in contacts) {
@@ -750,6 +772,11 @@ jobs:
                       Text("DEINE NUMMER · TIPPEN ZUM KOPIEREN", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
                       Spacer(Modifier.height(6.dp))
                       Text(fmt(me), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace)
+                      val status = if (!online) (if (merr.isNotEmpty()) "Funk: " + merr else "Verbinde …") else if (reg != "ok") reg else ""
+                      if (status.isNotEmpty()) Text(
+                          "⚠ " + status + " (tippen = erneut versuchen)", color = Color(0xFFFFA000), fontSize = 11.sp,
+                          modifier = Modifier.padding(top = 4.dp).pointerInput(Unit) { detectTapGestures { Radio.retry() } }
+                      )
                       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                           TextButton(
                               onClick = {
