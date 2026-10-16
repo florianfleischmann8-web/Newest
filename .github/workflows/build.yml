@@ -188,7 +188,7 @@ jobs:
           object Radio : MqttCallbackExtended {
               private const val RATE = 16000
               private const val CH = 1280
-              private const val BROKER = "tcp://broker.hivemq.com:1883"
+              private const val BROKER = "wss://broker.hivemq.com:8884/mqtt"
               private const val PREFIX = "funkapp1/ch/"
               private const val SERVER = "__SERVER__"
 
@@ -225,6 +225,7 @@ jobs:
                           isCleanSession = true
                           keepAliveInterval = 20
                           connectionTimeout = 10
+                          socketFactory = javax.net.ssl.SSLSocketFactory.getDefault()
                       }
                       while (!c.isConnected) {
                           try { c.connect(o); mqttErr.value = "" } catch (e: Throwable) { mqttErr.value = e.message ?: e.javaClass.simpleName; Thread.sleep(3000) }
@@ -971,7 +972,7 @@ jobs:
                   ) {
                       Text(
                           if (active) "SENDET" else "HALTEN",
-                          color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp
+                          color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, maxLines = 1, softWrap = false
                       )
                   }
               }
