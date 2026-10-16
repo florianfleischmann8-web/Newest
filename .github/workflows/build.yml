@@ -7,7 +7,7 @@ on:
 
 env:
   # HIER die URL deiner funke.php eintragen (https!)
-  FUNKE_SERVER: "https://DEINE-DOMAIN.de/funke.php"
+  FUNKE_SERVER: "https://florianfleischmann.de/funke.php"
 
 jobs:
   build:
