@@ -7,7 +7,7 @@ on:
 
 env:
   # HIER die URL deiner funke.php eintragen (https!)
-  FUNKE_SERVER: "https://florianfleischmann.de/index.php"
+  FUNKE_SERVER: "https://DEINE-DOMAIN.de/funke.php"
 
 jobs:
   build:
@@ -776,6 +776,7 @@ jobs:
                   }
               }
               LaunchedEffect(only) { Radio.onlyContacts = only }
+              LaunchedEffect(who) { if (who != null) { target = who; all = false } }
 
               Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
                   Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -852,7 +853,7 @@ jobs:
                                   contacts = contacts + (lc to ("Neu " + lc.takeLast(4)))
                                   Store.save(ctx, contacts)
                               }) { Text("SPEICHERN", color = Muted, fontSize = 12.sp) }
-                              if (!lc.startsWith("WEB")) Button(
+                              Button(
                                   onClick = { target = lc },
                                   colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
                                   shape = RoundedCornerShape(50),
