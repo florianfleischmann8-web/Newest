@@ -212,25 +212,45 @@ jobs:
               private val main = Handler(Looper.getMainLooper())
               @Volatile private var sending = false
 
+              private var started = false
+
               @Synchronized
               fun start(num: String) {
-                  if (client != null) return
+                  if (started) return
+                  started = true
                   me = num
-                  val c = MqttClient(BROKER, "fnk" + num + (1000..9999).random(), MemoryPersistence())
-                  c.setCallback(this)
-                  client = c
-                  Thread {
-                      val o = MqttConnectOptions().apply {
-                          isAutomaticReconnect = true
-                          isCleanSession = true
-                          keepAliveInterval = 20
-                          connectionTimeout = 10
-                          socketFactory = javax.net.ssl.SSLSocketFactory.getDefault()
+                  Thread { connectLoop() }.start()
+              }
+
+              private fun connectLoop() {
+                  var attempt = 0
+                  while (true) {
+                      try {
+                          val url = if (attempt % 2 == 0) {
+                              val ip = java.net.InetAddress.getAllByName("broker.hivemq.com")
+                                  .firstOrNull { it is java.net.Inet4Address }?.hostAddress
+                              if (ip != null) "tcp://" + ip + ":1883" else BROKER
+                          } else BROKER
+                          val c = MqttClient(url, "fnk" + me + (1000..9999).random(), MemoryPersistence())
+                          c.setCallback(this)
+                          val o = MqttConnectOptions().apply {
+                              isCleanSession = true
+                              keepAliveInterval = 20
+                              connectionTimeout = 10
+                              if (url.startsWith("wss")) socketFactory = javax.net.ssl.SSLSocketFactory.getDefault()
+                          }
+                          client = c
+                          c.connect(o)
+                          mqttErr.value = ""
+                          return
+                      } catch (e: Throwable) {
+                          val cause = e.cause
+                          mqttErr.value = (e.message ?: e.javaClass.simpleName) +
+                              (if (cause != null) " [" + cause.javaClass.simpleName + ": " + (cause.message ?: "") + "]" else "")
+                          attempt++
+                          try { Thread.sleep(3000) } catch (x: InterruptedException) { }
                       }
-                      while (!c.isConnected) {
-                          try { c.connect(o); mqttErr.value = "" } catch (e: Throwable) { mqttErr.value = e.message ?: e.javaClass.simpleName; Thread.sleep(3000) }
-                      }
-                  }.start()
+                  }
               }
 
               override fun connectComplete(reconnect: Boolean, serverURI: String?) {
@@ -242,7 +262,10 @@ jobs:
                   }.start()
               }
 
-              override fun connectionLost(cause: Throwable?) { connected.value = false }
+              override fun connectionLost(cause: Throwable?) {
+                  connected.value = false
+                  Thread { connectLoop() }.start()
+              }
               override fun deliveryComplete(token: IMqttDeliveryToken?) {}
 
               override fun messageArrived(topic: String?, m: MqttMessage?) {
