@@ -1,1077 +1,227 @@
-name: Build Funk APK
+name: Build IR Blaster APK
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
-
-env:
-  # HIER die URL deiner funke.php eintragen (https!)
-  FUNKE_SERVER: "https://florianfleischmann.de/funke.php"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (nur damit Actions ein Repo-Kontext hat)
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 17
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Android SDK Lizenzen akzeptieren
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Projektstruktur anlegen
         run: |
-          mkdir -p "$ANDROID_HOME/licenses"
-          echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e" > "$ANDROID_HOME/licenses/android-sdk-license"
+          mkdir -p app/src/main/java/com/example/irblaster
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
 
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.9
-
-      - name: Projekt generieren
+      - name: settings.gradle schreiben
         run: |
-          mkdir -p app/src/main/java/app/funk
-
-          cat > settings.gradle.kts <<'EOF'
+          cat > settings.gradle << 'EOF'
           pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
           }
           dependencyResolutionManagement {
-              repositories { google(); mavenCentral() }
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
           }
-          rootProject.name = "Funk"
-          include(":app")
+          rootProject.name = "IRBlaster"
+          include ':app'
           EOF
 
-          cat > build.gradle.kts <<'EOF'
+      - name: Root build.gradle schreiben
+        run: |
+          cat > build.gradle << 'EOF'
           plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+              id 'com.android.application' version '8.5.0' apply false
           }
           EOF
 
-          cat > gradle.properties <<'EOF'
-          android.useAndroidX=true
-          org.gradle.jvmargs=-Xmx3g
-          EOF
-
-          cat > app/build.gradle.kts <<'EOF'
+      - name: app/build.gradle schreiben
+        run: |
+          cat > app/build.gradle << 'EOF'
           plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
+              id 'com.android.application'
           }
+
           android {
-              namespace = "app.funk"
-              compileSdk = 34
+              namespace 'com.example.irblaster'
+              compileSdk 34
+
               defaultConfig {
-                  applicationId = "app.funk"
-                  minSdk = 26
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  applicationId "com.example.irblaster"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
               }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
               compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
               }
-              kotlinOptions { jvmTarget = "17" }
-              buildFeatures { compose = true }
-              composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
-              packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
           }
+
           dependencies {
-              implementation(platform("androidx.compose:compose-bom:2024.06.00"))
-              implementation("androidx.compose.ui:ui")
-              implementation("androidx.compose.material3:material3")
-              implementation("androidx.compose.foundation:foundation")
-              implementation("androidx.activity:activity-compose:1.9.0")
-              implementation("androidx.core:core-ktx:1.13.1")
-              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-              implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
+              implementation 'androidx.appcompat:appcompat:1.7.0'
           }
           EOF
 
-          cat > app/src/main/AndroidManifest.xml <<'EOF'
+      - name: AndroidManifest.xml schreiben
+        run: |
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.RECORD_AUDIO" />
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-              <uses-permission android:name="android.permission.WAKE_LOCK" />
-              <uses-permission android:name="android.permission.VIBRATE" />
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+              <uses-feature
+                  android:name="android.hardware.consumerir"
+                  android:required="true" />
+
               <application
-                  android:label="Funke"
-                  android:icon="@mipmap/ic_launcher"
-                  android:roundIcon="@mipmap/ic_launcher_round"
-                  android:theme="@android:style/Theme.Material.NoActionBar">
-                  <activity android:name=".MainActivity" android:exported="true">
+                  android:allowBackup="true"
+                  android:label="IR Blaster"
+                  android:theme="@android:style/Theme.Material.Light">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
-                  <service
-                      android:name=".RadioService"
-                      android:exported="false"
-                      android:foregroundServiceType="mediaPlayback" />
               </application>
+
           </manifest>
           EOF
 
-          mkdir -p app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
-
-          cat > app/src/main/res/drawable/ic_bg.xml <<'EOF'
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              xmlns:aapt="http://schemas.android.com/aapt"
-              android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-              <path android:pathData="M0,0h108v108h-108z">
-                  <aapt:attr name="android:fillColor">
-                      <gradient android:startX="0" android:startY="0" android:endX="108" android:endY="108" android:type="linear">
-                          <item android:offset="0" android:color="#FF0A1030"/>
-                          <item android:offset="0.55" android:color="#FF4A2BD8"/>
-                          <item android:offset="1" android:color="#FF00B8D9"/>
-                      </gradient>
-                  </aapt:attr>
-              </path>
-              <path android:pathData="M54,54m-31,0a31,31 0 1,0 62,0a31,31 0 1,0 -62,0" android:fillColor="#22FFFFFF"/>
-          </vector>
+      - name: strings.xml schreiben
+        run: |
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources>
+              <string name="app_name">IR Blaster</string>
+          </resources>
           EOF
 
-          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF'
-          <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-              <path android:pathData="M58,22 L38,58 L52,58 L47,86 L70,48 L55,48 Z" android:fillColor="#FFFFFFFF"/>
-              <path android:pathData="M34,40 Q27,54 34,68" android:strokeColor="#FF00E5FF" android:strokeWidth="3.5" android:strokeLineCap="round" android:fillColor="#00000000"/>
-              <path android:pathData="M27,33 Q16,54 27,75" android:strokeColor="#9900E5FF" android:strokeWidth="3" android:strokeLineCap="round" android:fillColor="#00000000"/>
-              <path android:pathData="M74,40 Q81,54 74,68" android:strokeColor="#FF00E5FF" android:strokeWidth="3.5" android:strokeLineCap="round" android:fillColor="#00000000"/>
-              <path android:pathData="M81,33 Q92,54 81,75" android:strokeColor="#9900E5FF" android:strokeWidth="3" android:strokeLineCap="round" android:fillColor="#00000000"/>
-          </vector>
+      - name: activity_main.xml schreiben
+        run: |
+          cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:gravity="center"
+              android:padding="24dp">
+
+              <TextView
+                  android:id="@+id/statusText"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:textSize="16sp"
+                  android:gravity="center"
+                  android:paddingBottom="32dp" />
+
+              <Button
+                  android:id="@+id/blastButton"
+                  android:layout_width="200dp"
+                  android:layout_height="200dp"
+                  android:text="IR\nSTOSS"
+                  android:textSize="22sp"
+                  android:textStyle="bold" />
+
+          </LinearLayout>
           EOF
 
-          for n in ic_launcher ic_launcher_round; do
-          cat > app/src/main/res/mipmap-anydpi-v26/$n.xml <<'EOF'
-          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-              <background android:drawable="@drawable/ic_bg"/>
-              <foreground android:drawable="@drawable/ic_fg"/>
-              <monochrome android:drawable="@drawable/ic_fg"/>
-          </adaptive-icon>
-          EOF
-          done
-          cat > app/src/main/java/app/funk/Radio.kt <<'EOF'
-          package app.funk
+      - name: MainActivity.java schreiben
+        run: |
+          cat > app/src/main/java/com/example/irblaster/MainActivity.java << 'EOF'
+          package com.example.irblaster;
 
-          import android.app.NotificationManager
-          import android.content.Context
-          import android.media.AudioAttributes
-          import android.media.AudioManager
-          import android.media.ToneGenerator
-          import android.os.VibrationEffect
-          import android.os.Vibrator
-          import androidx.core.app.NotificationCompat
-          import android.media.AudioFormat
-          import android.media.AudioRecord
-          import android.media.AudioTrack
-          import android.media.MediaRecorder
-          import android.os.Handler
-          import android.os.Looper
-          import kotlinx.coroutines.flow.MutableStateFlow
-          import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
-          import org.eclipse.paho.client.mqttv3.MqttCallbackExtended
-          import org.eclipse.paho.client.mqttv3.MqttClient
-          import org.eclipse.paho.client.mqttv3.MqttConnectOptions
-          import org.eclipse.paho.client.mqttv3.MqttMessage
-          import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+          import android.hardware.ConsumerIrManager;
+          import android.os.Bundle;
+          import android.widget.Button;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import androidx.appcompat.app.AppCompatActivity;
 
-          object Radio : MqttCallbackExtended {
-              private const val RATE = 16000
-              private const val CH = 1280
-              private const val BROKER = "wss://broker.hivemq.com:8884/mqtt"
-              private const val PREFIX = "funkapp1/ch/"
-              private const val SERVER = "__SERVER__"
+          public class MainActivity extends AppCompatActivity {
 
-              val connected = MutableStateFlow(false)
-              val incoming = MutableStateFlow<String?>(null)
-              val talking = MutableStateFlow(false)
-              val lastCaller = MutableStateFlow<String?>(null)
-              val reg = MutableStateFlow("Registriere …")
-              val mqttErr = MutableStateFlow("")
-              @Volatile var dndUntil = 0L
-              lateinit var app: Context
-              private var prevVol = -1
-              @Volatile var onlyContacts = false
-              private var lastDrop = 0L
+              private ConsumerIrManager irManager;
+              private TextView statusText;
 
-              private var me = ""
-              private var client: MqttClient? = null
-              private var track: AudioTrack? = null
-              private var pre = 0
-              private val lock = Any()
-              private val main = Handler(Looper.getMainLooper())
-              @Volatile private var sending = false
+              private static final int CARRIER_FREQUENCY = 38000;
 
-              private var started = false
+              private static final int[] PULSE_PATTERN = {
+                      9000, 4500,
+                      560, 560, 560, 560, 560, 1690,
+                      560, 560, 560, 560, 560, 560,
+                      560, 39000
+              };
 
-              @Synchronized
-              fun start(num: String) {
-                  if (started) return
-                  started = true
-                  me = num
-                  Thread { connectLoop() }.start()
-              }
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.activity_main);
 
-              private fun connectLoop() {
-                  var attempt = 0
-                  while (true) {
-                      try {
-                          val url = if (attempt % 2 == 0) {
-                              val ip = java.net.InetAddress.getAllByName("broker.hivemq.com")
-                                  .firstOrNull { it is java.net.Inet4Address }?.hostAddress
-                              if (ip != null) "tcp://" + ip + ":1883" else BROKER
-                          } else BROKER
-                          val c = MqttClient(url, "fnk" + me + (1000..9999).random(), MemoryPersistence())
-                          c.setCallback(this)
-                          val o = MqttConnectOptions().apply {
-                              isCleanSession = true
-                              keepAliveInterval = 20
-                              connectionTimeout = 10
-                              if (url.startsWith("wss")) socketFactory = javax.net.ssl.SSLSocketFactory.getDefault()
-                          }
-                          client = c
-                          c.connect(o)
-                          mqttErr.value = ""
-                          return
-                      } catch (e: Throwable) {
-                          val cause = e.cause
-                          mqttErr.value = (e.message ?: e.javaClass.simpleName) +
-                              (if (cause != null) " [" + cause.javaClass.simpleName + ": " + (cause.message ?: "") + "]" else "")
-                          attempt++
-                          try { Thread.sleep(3000) } catch (x: InterruptedException) { }
-                      }
+                  statusText = findViewById(R.id.statusText);
+                  Button blastButton = findViewById(R.id.blastButton);
+
+                  irManager = (ConsumerIrManager) getSystemService(CONSUMER_IR_SERVICE);
+
+                  if (irManager == null || !irManager.hasIrEmitter()) {
+                      statusText.setText("Kein eingebauter Infrarot-Sender auf diesem Gerät gefunden.");
+                      blastButton.setEnabled(false);
+                      return;
                   }
+
+                  statusText.setText("Bereit. Tippe den Button für einen IR-Stoß.");
+
+                  blastButton.setOnClickListener(v -> sendPulse());
               }
 
-              override fun connectComplete(reconnect: Boolean, serverURI: String?) {
-                  Thread {
-                      try {
-                          client?.subscribe(PREFIX + me, 0)
-                          connected.value = true
-                      } catch (e: Exception) { }
-                  }.start()
-              }
-
-              override fun connectionLost(cause: Throwable?) {
-                  connected.value = false
-                  Thread { connectLoop() }.start()
-              }
-              override fun deliveryComplete(token: IMqttDeliveryToken?) {}
-
-              override fun messageArrived(topic: String?, m: MqttMessage?) {
-                  val p = m?.payload ?: return
-                  if (p.size < 9) return
-                  val from0 = String(p, 0, 8)
-                  val nowMs = System.currentTimeMillis()
-                  val stranger = onlyContacts && Store.contacts(app).none { it.first == from0 }
-                  if (nowMs < dndUntil || stranger) {
-                      if (p[8].toInt() == 0 && nowMs - lastDrop > 5000) Store.addLog(app, from0, true)
-                      lastDrop = nowMs
-                      return
-                  }
-                  val from = String(p, 0, 8)
-                  if (p[8].toInt() == 1) {
-                      main.removeCallbacks(idle)
-                      main.post(idle)
-                      return
-                  }
-                  var isNew = false
-                  synchronized(lock) {
-                      isNew = track == null
-                      val t = track ?: newTrack().also { track = it; pre = 0 }
-                      t.write(p, 9, p.size - 9)
-                      if (++pre == 2) t.play()
-                  }
-                  if (isNew) callStart(from)
-                  incoming.value = from
-                  lastCaller.value = from
-                  main.removeCallbacks(idle)
-                  main.postDelayed(idle, 1500)
-              }
-
-              private val idle = Runnable {
-                  incoming.value = null
-                  val t = synchronized(lock) { track.also { track = null } }
-                  if (t != null) Thread {
-                      try { t.play(); t.stop(); Thread.sleep(600); t.release(); if (track == null) restoreVolume() } catch (e: Exception) { }
-                  }.start()
-              }
-
-              private fun newTrack(): AudioTrack {
-                  halfVolume()
-                  val min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                  return AudioTrack.Builder()
-                      .setAudioAttributes(
-                          AudioAttributes.Builder()
-                              .setUsage(AudioAttributes.USAGE_MEDIA)
-                              .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                              .build()
-                      )
-                      .setAudioFormat(
-                          AudioFormat.Builder()
-                              .setSampleRate(RATE)
-                              .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                              .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                              .build()
-                      )
-                      .setBufferSizeInBytes(maxOf(min * 2, 16000))
-                      .setTransferMode(AudioTrack.MODE_STREAM)
-                      .build()
-              }
-
-              private fun post(action: String, body: String): String? = try {
-                  val c = java.net.URL(SERVER + "?api=" + action).openConnection() as java.net.HttpURLConnection
-                  c.requestMethod = "POST"
-                  c.doOutput = true
-                  c.connectTimeout = 5000
-                  c.readTimeout = 5000
-                  c.outputStream.use { it.write(body.toByteArray()) }
-                  if (c.responseCode == 200) c.inputStream.bufferedReader().readText() else "!HTTP " + c.responseCode
-              } catch (e: Exception) { "!" + (e.message ?: e.javaClass.simpleName) }
-
-              fun register(num: String, sec: String): String? {
-                  if (SERVER.contains("DEINE-DOMAIN")) { reg.value = "Server-URL in build.yml fehlt"; return null }
-                  val r = post("appreg", "{\"number\":\"" + num + "\",\"sec\":\"" + sec + "\"}") ?: return null
-                  if (r.startsWith("!")) { reg.value = "Server: " + r.substring(1); return null }
-                  if (r.contains("conflict")) return "conflict"
-                  if (r.contains("\"ok\":1")) { reg.value = "ok"; return "ok" }
-                  reg.value = "Server-Antwort ungültig (aktuelle funke.php?)"
-                  return null
-              }
-
-              fun retry() {
-                  try { Thread { register(Store.number(app), Store.secret(app)) }.start() } catch (e: Exception) { }
-              }
-
-              fun check(num: String): Boolean? {
-                  val r = post("check", "{\"number\":\"" + num + "\"}") ?: return null
-                  if (r.startsWith("!")) return null
-                  return r.contains("\"valid\":true")
-              }
-              private fun halfVolume() {
+              private void sendPulse() {
                   try {
-                      val am = app.getSystemService(AudioManager::class.java)
-                      if (prevVol < 0) prevVol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                      am.setStreamVolume(AudioManager.STREAM_MUSIC, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) / 2, 0)
-                  } catch (e: Exception) { }
-              }
-
-              private fun restoreVolume() {
-                  try {
-                      if (prevVol >= 0) {
-                          app.getSystemService(AudioManager::class.java).setStreamVolume(AudioManager.STREAM_MUSIC, prevVol, 0)
-                          prevVol = -1
-                      }
-                  } catch (e: Exception) { }
-              }
-
-              private fun callStart(from: String) {
-                  try {
-                      Store.addLog(app, from, false)
-                      val name = Store.contacts(app).firstOrNull { it.first == from }?.second ?: fmt(from)
-                      app.getSystemService(Vibrator::class.java)
-                          .vibrate(VibrationEffect.createOneShot(250, VibrationEffect.DEFAULT_AMPLITUDE))
-                      val pi = android.app.PendingIntent.getActivity(
-                          app, 0, android.content.Intent(app, MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE
-                      )
-                      val n = NotificationCompat.Builder(app, "call")
-                          .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                          .setContentTitle("Anruf von " + name)
-                          .setContentText(fmt(from))
-                          .setPriority(NotificationCompat.PRIORITY_HIGH)
-                          .setCategory(NotificationCompat.CATEGORY_CALL)
-                          .setTimeoutAfter(8000)
-                          .setAutoCancel(true)
-                          .setContentIntent(pi)
-                          .build()
-                      app.getSystemService(NotificationManager::class.java).notify(2, n)
-                  } catch (e: Exception) { }
-              }
-
-              fun talk(target: String) {
-                  if (sending || !connected.value) return
-                  sending = true
-                  talking.value = true
-                  Thread {
-                      var r: AudioRecord? = null
-                      try {
-                          val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                          r = AudioRecord(
-                              MediaRecorder.AudioSource.MIC, RATE,
-                              AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                              maxOf(min, CH * 4)
-                          )
-                          r.startRecording()
-                          val topics = target.split(",").map { PREFIX + it }
-                          val buf = ByteArray(9 + CH)
-                          me.toByteArray().copyInto(buf)
-                          val t0 = System.currentTimeMillis()
-                          while (sending && System.currentTimeMillis() - t0 < 60000) {
-                              val n = r.read(buf, 9, CH)
-                              if (n > 0) { val pk = buf.copyOf(9 + n); for (tp in topics) client?.publish(tp, pk, 0, false) }
-                          }
-                          sending = false
-                          val end = ByteArray(9)
-                          me.toByteArray().copyInto(end)
-                          end[8] = 1
-                          for (tp in topics) client?.publish(tp, end, 0, false)
-                      } catch (e: Exception) {
-                          sending = false
-                      } finally {
-                          try { r?.stop(); r?.release() } catch (e: Exception) { }
-                          talking.value = false
-                      }
-                  }.start()
-              }
-
-              fun stopTalk() { sending = false }
-          }
-          EOF
-
-          cat > app/src/main/java/app/funk/RadioService.kt <<'EOF'
-          package app.funk
-
-          import android.app.NotificationChannel
-          import android.app.NotificationManager
-          import android.app.PendingIntent
-          import android.app.Service
-          import android.content.Intent
-          import android.os.IBinder
-          import android.os.PowerManager
-          import androidx.core.app.NotificationCompat
-          import androidx.core.app.ServiceCompat
-          import android.content.pm.ServiceInfo
-
-          class RadioService : Service() {
-              private var wl: PowerManager.WakeLock? = null
-
-              override fun onBind(i: Intent?): IBinder? = null
-
-              override fun onStartCommand(i: Intent?, flags: Int, id: Int): Int {
-                  val nm = getSystemService(NotificationManager::class.java)
-                  nm.createNotificationChannel(
-                      NotificationChannel("radio", "Funk", NotificationManager.IMPORTANCE_LOW)
-                  )
-                  val pi = PendingIntent.getActivity(
-                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
-                  )
-                  val n = NotificationCompat.Builder(this, "radio")
-                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                      .setContentTitle("Funke bereit")
-                      .setContentText("Empfang läuft im Hintergrund")
-                      .setContentIntent(pi)
-                      .setOngoing(true)
-                      .build()
-                  ServiceCompat.startForeground(this, 1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-                  if (wl == null) {
-                      wl = (getSystemService(POWER_SERVICE) as PowerManager)
-                          .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "funk:radio")
-                          .apply { acquire() }
+                      irManager.transmit(CARRIER_FREQUENCY, PULSE_PATTERN);
+                      statusText.setText("IR-Stoß gesendet (" + System.currentTimeMillis() + ")");
+                  } catch (Exception e) {
+                      statusText.setText("Fehler beim Senden: " + e.getMessage());
+                      Toast.makeText(this, "Senden fehlgeschlagen", Toast.LENGTH_SHORT).show();
                   }
-                  nm.createNotificationChannel(
-                      NotificationChannel("call", "Anrufe", NotificationManager.IMPORTANCE_HIGH).apply {
-                          setSound(null, null)
-                          enableVibration(false)
-                      }
-                  )
-                  Radio.app = applicationContext
-                  Radio.dndUntil = Store.dndUntil(this)
-                  Thread {
-                      var tries = 0
-                      while (tries++ < 5) {
-                          val r = Radio.register(Store.number(this), Store.secret(this))
-                          if (r == "conflict") Store.reroll(this) else break
-                      }
-                      Radio.start(Store.number(this))
-                      while (Radio.reg.value != "ok") {
-                          Thread.sleep(20000)
-                          if (Radio.register(Store.number(this), Store.secret(this)) == "conflict") {
-                              Store.reroll(this)
-                              Radio.reg.value = "Nummer war doppelt: App neu starten"
-                              break
-                          }
-                      }
-                  }.start()
-                  return START_STICKY
-              }
-
-              override fun onDestroy() {
-                  wl?.release()
-                  super.onDestroy()
               }
           }
           EOF
 
-          cat > app/src/main/java/app/funk/MainActivity.kt <<'EOF'
-          package app.funk
+      - name: Debug-APK bauen
+        run: gradle assembleDebug --no-daemon
 
-          import android.Manifest
-          import android.content.Context
-          import android.content.Intent
-          import android.content.pm.PackageManager
-          import android.os.Build
-          import android.os.Bundle
-          import androidx.activity.ComponentActivity
-          import androidx.activity.compose.rememberLauncherForActivityResult
-          import androidx.activity.compose.setContent
-          import androidx.activity.result.contract.ActivityResultContracts
-          import androidx.compose.animation.core.RepeatMode
-          import androidx.compose.animation.core.animateFloat
-          import androidx.compose.animation.core.animateFloatAsState
-          import androidx.compose.animation.core.infiniteRepeatable
-          import androidx.compose.animation.core.rememberInfiniteTransition
-          import androidx.compose.animation.core.tween
-          import androidx.compose.foundation.background
-          import androidx.compose.foundation.border
-          import androidx.compose.foundation.gestures.detectTapGestures
-          import androidx.compose.foundation.layout.*
-          import androidx.compose.foundation.lazy.LazyColumn
-          import androidx.compose.foundation.lazy.LazyRow
-          import androidx.compose.foundation.lazy.items
-          import androidx.compose.foundation.shape.CircleShape
-          import androidx.compose.foundation.shape.RoundedCornerShape
-          import androidx.compose.foundation.text.KeyboardOptions
-          import androidx.compose.material3.*
-          import androidx.compose.runtime.*
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.draw.scale
-          import androidx.compose.ui.draw.shadow
-          import androidx.compose.ui.graphics.Brush
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-          import androidx.compose.ui.input.pointer.pointerInput
-          import androidx.compose.ui.platform.LocalClipboardManager
-          import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.platform.LocalHapticFeedback
-          import androidx.compose.ui.text.AnnotatedString
-          import androidx.compose.ui.text.font.FontFamily
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.input.KeyboardType
-          import androidx.compose.ui.text.style.TextAlign
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import androidx.core.content.ContextCompat
-
-          val Neon = Color(0xFF00E5FF)
-          val Violet = Color(0xFF7C4DFF)
-          val Muted = Color(0xFF8A94A8)
-
-          object Store {
-              fun dndUntil(c: Context) = c.getSharedPreferences("funk", Context.MODE_PRIVATE).getLong("dndUntil", 0L)
-              fun dndUsedToday(c: Context) =
-                  c.getSharedPreferences("funk", Context.MODE_PRIVATE).getString("dndDay", "") == java.time.LocalDate.now().toString()
-              fun startDnd(c: Context): Long {
-                  val u = System.currentTimeMillis() + 600000L
-                  c.getSharedPreferences("funk", Context.MODE_PRIVATE).edit()
-                      .putString("dndDay", java.time.LocalDate.now().toString()).putLong("dndUntil", u).apply()
-                  return u
-              }
-              fun endDnd(c: Context) {
-                  c.getSharedPreferences("funk", Context.MODE_PRIVATE).edit().putLong("dndUntil", 0L).apply()
-              }
-              private fun p(c: Context) = c.getSharedPreferences("funk", Context.MODE_PRIVATE)
-              fun number(c: Context): String {
-                  val s = p(c).getString("num", null)
-                  if (s != null) return s
-                  val n = (10000000..99999999).random().toString()
-                  p(c).edit().putString("num", n).apply()
-                  return n
-              }
-              fun only(c: Context) = p(c).getBoolean("only", false)
-              fun setOnly(c: Context, v: Boolean) { p(c).edit().putBoolean("only", v).apply() }
-              fun logs(c: Context): List<Triple<String, Long, Boolean>> =
-                  p(c).getString("log", "")!!.lines().filter { it.count { ch -> ch == ';' } == 2 }
-                      .map { val s = it.split(";"); Triple(s[0], s[1].toLongOrNull() ?: 0L, s[2] == "1") }
-              fun addLog(c: Context, n: String, missed: Boolean) {
-                  val l = listOf(n + ";" + System.currentTimeMillis() + ";" + (if (missed) "1" else "0")) +
-                      p(c).getString("log", "")!!.lines().filter { it.isNotBlank() }
-                  p(c).edit().putString("log", l.take(30).joinToString("\n")).apply()
-              }
-              fun secret(c: Context): String {
-                  val s = p(c).getString("sec", null)
-                  if (s != null) return s
-                  val n = java.util.UUID.randomUUID().toString().replace("-", "")
-                  p(c).edit().putString("sec", n).apply()
-                  return n
-              }
-              fun reroll(c: Context): String {
-                  val n = (10000000..99999999).random().toString()
-                  p(c).edit().putString("num", n).apply()
-                  return n
-              }
-              fun contacts(c: Context): List<Pair<String, String>> =
-                  p(c).getString("c", "")!!.lines().filter { it.contains(";") }
-                      .map { it.substringBefore(";") to it.substringAfter(";") }
-              fun save(c: Context, l: List<Pair<String, String>>) {
-                  p(c).edit().putString("c", l.joinToString("\n") { it.first + ";" + it.second }).apply()
-              }
-          }
-
-          fun fmt(n: String) = if (n.startsWith("WEB")) "Web-Anrufer" else n.chunked(4).joinToString(" ")
-
-          class MainActivity : ComponentActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  setContent { MaterialTheme(colorScheme = darkColorScheme()) { App() } }
-              }
-          }
-
-          @Composable
-          fun App() {
-              val ctx = LocalContext.current
-              fun hasMic() = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
-                  PackageManager.PERMISSION_GRANTED
-              var ok by remember { mutableStateOf(hasMic()) }
-              val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-                  ok = hasMic()
-              }
-              LaunchedEffect(ok) {
-                  if (ok) ContextCompat.startForegroundService(ctx, Intent(ctx, RadioService::class.java))
-              }
-              Box(
-                  Modifier.fillMaxSize()
-                      .background(Brush.radialGradient(listOf(Color(0xFF18276B), Color(0xFF070A14), Color(0xFF05070D)), center = androidx.compose.ui.geometry.Offset(500f, 0f), radius = 1800f))
-                      .systemBarsPadding()
-              ) {
-                  if (ok) Home() else Welcome {
-                      val perms = if (Build.VERSION.SDK_INT >= 33)
-                          arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
-                      else arrayOf(Manifest.permission.RECORD_AUDIO)
-                      ask.launch(perms)
-                  }
-              }
-          }
-
-          @Composable
-          fun Welcome(onAllow: () -> Unit) {
-              Column(
-                  Modifier.fillMaxSize().padding(32.dp),
-                  verticalArrangement = Arrangement.Center,
-                  horizontalAlignment = Alignment.CenterHorizontally
-              ) {
-                  Text("FUNKE", fontSize = 56.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp, color = Neon)
-                  Spacer(Modifier.height(16.dp))
-                  Text(
-                      "Walkie-Talkie in Echtzeit.\nTaste halten, sprechen, fertig. Der andere muss nichts annehmen.",
-                      color = Color.White, textAlign = TextAlign.Center, fontSize = 17.sp
-                  )
-                  Spacer(Modifier.height(12.dp))
-                  Text(
-                      "Damit du auch bei geschlossener App Funksprüche hörst, braucht Funk Zugriff auf Mikrofon und Benachrichtigungen.",
-                      color = Muted, textAlign = TextAlign.Center, fontSize = 14.sp
-                  )
-                  Spacer(Modifier.height(36.dp))
-                  Button(
-                      onClick = onAllow,
-                      colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
-                      shape = RoundedCornerShape(50),
-                      modifier = Modifier.fillMaxWidth().height(56.dp)
-                  ) { Text("Erlauben & starten", fontWeight = FontWeight.Bold, fontSize = 17.sp) }
-              }
-          }
-
-          @Composable
-          fun Glass(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-              Column(
-                  modifier.clip(RoundedCornerShape(22.dp))
-                      .background(Color.White.copy(alpha = 0.06f))
-                      .border(1.dp, Brush.linearGradient(listOf(Neon.copy(alpha = 0.5f), Violet.copy(alpha = 0.2f))), RoundedCornerShape(22.dp))
-                      .padding(16.dp),
-                  content = content
-              )
-          }
-
-          @Composable
-          fun Tog(label: String, on: Boolean, click: () -> Unit) {
-              Text(
-                  label, color = if (on) Color.Black else Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
-                  modifier = Modifier.clip(RoundedCornerShape(50))
-                      .background(if (on) Neon else Color.White.copy(alpha = 0.08f))
-                      .pointerInput(on) { detectTapGestures { click() } }
-                      .padding(horizontal = 14.dp, vertical = 8.dp)
-              )
-          }
-
-          @Composable
-          fun LogDialog(ctx: Context, contacts: List<Pair<String, String>>, onDismiss: () -> Unit) {
-              val log = remember { Store.logs(ctx) }
-              val df = remember { java.text.SimpleDateFormat("dd.MM. HH:mm", java.util.Locale.GERMANY) }
-              AlertDialog(
-                  onDismissRequest = onDismiss, containerColor = Color(0xFF111A2E),
-                  titleContentColor = Color.White, textContentColor = Color.White,
-                  title = { Text("Verlauf") },
-                  text = {
-                      if (log.isEmpty()) Text("Noch keine Anrufe.", color = Muted)
-                      else LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                          items(log) { e ->
-                              Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                  Column(Modifier.weight(1f)) {
-                                      Text(contacts.firstOrNull { it.first == e.first }?.second ?: fmt(e.first), color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
-                                      Text(
-                                          df.format(java.util.Date(e.second)) + (if (e.third) " · verpasst" else ""),
-                                          color = if (e.third) Color(0xFFFFA000) else Muted, fontSize = 12.sp
-                                      )
-                                  }
-                              }
-                          }
-                      }
-                  },
-                  confirmButton = { TextButton(onClick = onDismiss) { Text("Schließen", color = Neon) } }
-              )
-          }
-
-          @Composable
-          fun Eq() {
-              val t = rememberInfiniteTransition(label = "eq")
-              Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-                  for (i in 0 until 5) {
-                      val h by t.animateFloat(6f, 24f, infiniteRepeatable(tween(350 + i * 90), RepeatMode.Reverse), label = "b" + i)
-                      Box(Modifier.width(4.dp).height(h.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF00E676)))
-                  }
-              }
-          }
-
-          @Composable
-          fun Home() {
-              val ctx = LocalContext.current
-              val me = remember { Store.number(ctx) }
-              val online by Radio.connected.collectAsState()
-              val inc by Radio.incoming.collectAsState()
-              val talking by Radio.talking.collectAsState()
-              var contacts by remember { mutableStateOf(Store.contacts(ctx)) }
-              var target by remember { mutableStateOf(contacts.firstOrNull()?.first) }
-              var dlg by remember { mutableStateOf(false) }
-              val haptic = LocalHapticFeedback.current
-              val clip = LocalClipboardManager.current
-              fun nameOf(n: String) = contacts.firstOrNull { it.first == n }?.second ?: fmt(n)
-              val who = inc
-              val last by Radio.lastCaller.collectAsState()
-              var dnd by remember { mutableStateOf(Store.dndUntil(ctx)) }
-              var now by remember { mutableStateOf(System.currentTimeMillis()) }
-              LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(1000) } }
-              val dndOn = now < dnd
-              val usedToday = Store.dndUsedToday(ctx)
-              var all by remember { mutableStateOf(false) }
-              var only by remember { mutableStateOf(Store.only(ctx)) }
-              var showLog by remember { mutableStateOf(false) }
-              val reg by Radio.reg.collectAsState()
-              val merr by Radio.mqttErr.collectAsState()
-              val valid = remember { mutableStateMapOf<String, Boolean>() }
-              LaunchedEffect(contacts) {
-                  for (c in contacts) {
-                      val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Radio.check(c.first) }
-                      if (r != null) valid[c.first] = r
-                  }
-              }
-              LaunchedEffect(only) { Radio.onlyContacts = only }
-              LaunchedEffect(who) { if (who != null) { target = who; all = false } }
-
-              Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp)) {
-                  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                      Text("⚡FUNKE", fontSize = 24.sp, fontWeight = FontWeight.Black, letterSpacing = 8.sp, color = Neon)
-                      Spacer(Modifier.weight(1f))
-                      Row(
-                          Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.08f))
-                              .padding(horizontal = 12.dp, vertical = 6.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          Box(Modifier.size(8.dp).clip(CircleShape).background(if (online) Color(0xFF00E676) else Color(0xFFFFA000)))
-                          Spacer(Modifier.width(8.dp))
-                          Text(if (online) "ONLINE" else "VERBINDE", color = Muted, fontSize = 11.sp, letterSpacing = 2.sp)
-                      }
-                  }
-                  Spacer(Modifier.height(14.dp))
-                  Glass(Modifier.fillMaxWidth().pointerInput(Unit) { detectTapGestures { clip.setText(AnnotatedString(me)) } }) {
-                      Text("DEINE NUMMER · TIPPEN ZUM KOPIEREN", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
-                      Spacer(Modifier.height(6.dp))
-                      Text(fmt(me), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = Color.White, fontFamily = FontFamily.Monospace)
-                      val status = if (!online) (if (merr.isNotEmpty()) "Funk: " + merr else "Verbinde …") else if (reg != "ok") reg else ""
-                      if (status.isNotEmpty()) Text(
-                          "⚠ " + status + " (tippen = erneut versuchen)", color = Color(0xFFFFA000), fontSize = 11.sp,
-                          modifier = Modifier.padding(top = 4.dp).pointerInput(Unit) { detectTapGestures { Radio.retry() } }
-                      )
-                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                          TextButton(
-                              onClick = {
-                                  val i = Intent(Intent.ACTION_SEND).setType("text/plain")
-                                      .putExtra(Intent.EXTRA_TEXT, "Meine Funke-Nummer: " + fmt(me) + " - funk mich an!")
-                                  ctx.startActivity(Intent.createChooser(i, "Nummer teilen"))
-                              },
-                              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                          ) { Text("TEILEN", color = Neon, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                          TextButton(onClick = { showLog = true }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                              Text("VERLAUF", color = Neon, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                          }
-                      }
-                  }
-                  val lc = last
-                  Spacer(Modifier.height(10.dp))
-                  if (dndOn) {
-                      Glass(Modifier.fillMaxWidth()) {
-                          Row(verticalAlignment = Alignment.CenterVertically) {
-                              Column {
-                                  Text("NICHT STÖREN AKTIV", color = Color(0xFFFFA000), fontSize = 11.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
-                                  val left = maxOf((dnd - now) / 1000, 0L)
-                                  Text("%02d:%02d".format(left / 60, left % 60), color = Color.White, fontSize = 30.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                              }
-                              Spacer(Modifier.weight(1f))
-                              TextButton(onClick = { Radio.dndUntil = 0L; dnd = 0L; Store.endDnd(ctx) }) { Text("BEENDEN", color = Neon, fontWeight = FontWeight.Bold) }
-                          }
-                      }
-                  } else if (who != null) {
-                      Glass(Modifier.fillMaxWidth()) {
-                          Row(verticalAlignment = Alignment.CenterVertically) {
-                              Eq()
-                              Spacer(Modifier.width(14.dp))
-                              Column {
-                                  Text("ANRUF VON", color = Color(0xFF00E676), fontSize = 11.sp, letterSpacing = 3.sp, fontWeight = FontWeight.Bold)
-                                  Text(nameOf(who), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black, maxLines = 1)
-                                  Text(fmt(who), color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                              }
-                          }
-                      }
-                  } else if (lc != null) {
-                      Glass(Modifier.fillMaxWidth()) {
-                          Row(verticalAlignment = Alignment.CenterVertically) {
-                              Column(Modifier.weight(1f)) {
-                                  Text("LETZTER ANRUF", color = Muted, fontSize = 10.sp, letterSpacing = 2.sp)
-                                  Text(nameOf(lc), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                              }
-                              if (contacts.none { it.first == lc } && !lc.startsWith("WEB")) TextButton(onClick = {
-                                  contacts = contacts + (lc to ("Neu " + lc.takeLast(4)))
-                                  Store.save(ctx, contacts)
-                              }) { Text("SPEICHERN", color = Muted, fontSize = 12.sp) }
-                              Button(
-                                  onClick = { target = lc },
-                                  colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
-                                  shape = RoundedCornerShape(50),
-                                  contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
-                              ) { Text("ANTWORTEN", fontWeight = FontWeight.Black, fontSize = 12.sp) }
-                          }
-                      }
-                  } else {
-                      Text("Warte auf Anrufe …", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(vertical = 14.dp))
-                  }
-                  if (!dndOn) {
-                      Spacer(Modifier.height(8.dp))
-                      Button(
-                          onClick = { dnd = Store.startDnd(ctx); Radio.dndUntil = dnd; now = System.currentTimeMillis() },
-                          enabled = !usedToday,
-                          colors = ButtonDefaults.buttonColors(
-                              containerColor = Violet, contentColor = Color.White,
-                              disabledContainerColor = Color.White.copy(alpha = 0.08f), disabledContentColor = Muted
-                          ),
-                          shape = RoundedCornerShape(50),
-                          modifier = Modifier.fillMaxWidth()
-                      ) {
-                          Text(
-                              if (usedToday) "NICHT STÖREN · HEUTE SCHON GENUTZT" else "NICHT STÖREN · 10 MIN (1× PRO TAG)",
-                              fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
-                          )
-                      }
-                  }
-                  BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                      val s = maxOf(minOf(maxWidth, maxHeight - 90.dp), 150.dp)
-                      Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                          Text(if (all) "Rundruf an alle" else target?.let { nameOf(it) } ?: "Kein Kontakt gewählt", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                          Text(if (all) contacts.size.toString() + " Kontakte" else target?.let { fmt(it) } ?: "unten Kontakt hinzufügen", color = Muted, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                          Ptt(
-                              active = talking,
-                              enabled = (if (all) contacts.isNotEmpty() else target != null) && online && (all || valid[target ?: ""] != false),
-                              size = s,
-                              onDown = {
-                                  haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                  if (all) Radio.talk(contacts.joinToString(",") { it.first }) else target?.let { Radio.talk(it) }
-                              },
-                              onUp = { Radio.stopTalk() }
-                          )
-                      }
-                  }
-                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                      Tog("RUNDRUF", all) { all = !all }
-                      Tog("NUR KONTAKTE", only) { only = !only; Store.setOnly(ctx, only) }
-                  }
-                  Spacer(Modifier.height(10.dp))
-                  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                      Text("KONTAKTE", color = Muted, fontSize = 11.sp, letterSpacing = 3.sp)
-                      Spacer(Modifier.weight(1f))
-                      Button(
-                          onClick = { dlg = true },
-                          colors = ButtonDefaults.buttonColors(containerColor = Neon, contentColor = Color.Black),
-                          shape = RoundedCornerShape(50),
-                          contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)
-                      ) { Text("+ HINZUFÜGEN", fontWeight = FontWeight.Black, fontSize = 12.sp) }
-                  }
-                  Spacer(Modifier.height(10.dp))
-                  if (contacts.isEmpty()) Text("Noch keine Kontakte. Tippe oben auf + HINZUFÜGEN.", color = Muted, fontSize = 13.sp)
-                  LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                      items(contacts) { c ->
-                          val sel = c.first == target
-                          Column(
-                              Modifier.clip(RoundedCornerShape(18.dp))
-                                  .background(if (sel) Neon.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.06f))
-                                  .border(1.dp, if (sel) Neon else Color.Transparent, RoundedCornerShape(18.dp))
-                                  .pointerInput(c) {
-                                      detectTapGestures(
-                                          onTap = { target = c.first },
-                                          onLongPress = {
-                                              contacts = contacts.filter { it.first != c.first }
-                                              Store.save(ctx, contacts)
-                                              if (target == c.first) target = contacts.firstOrNull()?.first
-                                          }
-                                      )
-                                  }
-                                  .padding(horizontal = 18.dp, vertical = 12.dp)
-                          ) {
-                              Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    Modifier.size(8.dp).clip(CircleShape).background(
-                                        when (valid[c.first]) { true -> Color(0xFF00E676); false -> Color(0xFFFF5252); else -> Muted }
-                                    )
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(c.second, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1)
-                            }
-                              Text(fmt(c.first), color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                          }
-                      }
-                  }
-                  if (contacts.isNotEmpty()) Text("Lange drücken = löschen", color = Muted.copy(alpha = 0.6f), fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
-              }
-
-              if (showLog) LogDialog(ctx, contacts) { showLog = false }
-
-              if (dlg) AddDialog(me, { dlg = false }) { n, name ->
-                  contacts = contacts.filter { it.first != n } + (n to name.replace(";", " "))
-                  Store.save(ctx, contacts)
-                  target = n
-                  dlg = false
-              }
-          }
-
-          @Composable
-          fun Ptt(active: Boolean, enabled: Boolean, size: androidx.compose.ui.unit.Dp, onDown: () -> Unit, onUp: () -> Unit) {
-              val inf = rememberInfiniteTransition(label = "pulse")
-              val pulse by inf.animateFloat(
-                  initialValue = 1f, targetValue = 1.4f,
-                  animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "p"
-              )
-              val press by animateFloatAsState(if (active) 0.94f else 1f, label = "s")
-              val colors = if (active) listOf(Color(0xFFFF3D71), Color(0xFFFF8A00))
-              else if (enabled) listOf(Neon, Violet) else listOf(Color(0xFF3A4256), Color(0xFF2A3042))
-              Box(Modifier.size(size), contentAlignment = Alignment.Center) {
-                  Box(Modifier.size(size * 0.92f).border(1.dp, colors[0].copy(alpha = 0.18f), CircleShape))
-                  Box(Modifier.size(size * 0.82f).border(1.dp, colors[0].copy(alpha = 0.32f), CircleShape))
-                  if (active) Box(
-                      Modifier.size(size * 0.7f).scale(pulse).clip(CircleShape)
-                          .background(Color(0xFFFF3D71).copy(alpha = 0.2f))
-                  )
-                  Box(
-                      Modifier.size(size * 0.7f).scale(press)
-                          .shadow(if (active) 40.dp else 18.dp, CircleShape, spotColor = colors[0], ambientColor = colors[0])
-                          .clip(CircleShape)
-                          .background(Brush.linearGradient(colors))
-                          .pointerInput(enabled) {
-                              detectTapGestures(onPress = {
-                                  if (enabled) {
-                                      onDown()
-                                      tryAwaitRelease()
-                                      onUp()
-                                  }
-                              })
-                          },
-                      contentAlignment = Alignment.Center
-                  ) {
-                      Text(
-                          if (active) "SENDET" else "HALTEN",
-                          color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, maxLines = 1, softWrap = false
-                      )
-                  }
-              }
-          }
-
-          @Composable
-          fun AddDialog(me: String, onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
-              var num by remember { mutableStateOf("") }
-              var name by remember { mutableStateOf("") }
-              var err by remember { mutableStateOf("") }
-              var state by remember { mutableStateOf<Boolean?>(null) }
-              var checked by remember { mutableStateOf(false) }
-              LaunchedEffect(num) {
-                  state = null
-                  checked = false
-                  if (num.length == 8) {
-                      kotlinx.coroutines.delay(300)
-                      state = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Radio.check(num) }
-                      checked = true
-                  }
-              }
-              AlertDialog(
-                  onDismissRequest = onDismiss,
-                  containerColor = Color(0xFF111A2E),
-                  titleContentColor = Color.White,
-                  textContentColor = Color.White,
-                  title = { Text("Kontakt hinzufügen") },
-                  text = {
-                      Column {
-                          OutlinedTextField(
-                              value = num, onValueChange = { num = it.filter(Char::isDigit).take(8); err = "" },
-                              label = { Text("Nummer (8 Ziffern)") }, singleLine = true,
-                              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                          )
-                          Spacer(Modifier.height(6.dp))
-                          when {
-                              num.length < 8 -> Text("8 Ziffern eingeben", color = Muted, fontSize = 13.sp)
-                              !checked -> Text("Prüfe Nummer …", color = Muted, fontSize = 13.sp)
-                              state == true -> Text("✓ Gültige Nummer · erreichbar", color = Color(0xFF00E676), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                              state == false -> Text("✗ Keine gültige Nummer", color = Color(0xFFFF5252), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                              else -> Text("Server nicht erreichbar, Nummer ungeprüft", color = Color(0xFFFFA000), fontSize = 13.sp)
-                          }
-                          Spacer(Modifier.height(8.dp))
-                          OutlinedTextField(
-                              value = name, onValueChange = { name = it.take(20) },
-                              label = { Text("Name (optional)") }, singleLine = true
-                          )
-                          if (err.isNotEmpty()) {
-                              Spacer(Modifier.height(8.dp))
-                              Text(err, color = Color(0xFFFF5252), fontSize = 13.sp)
-                          }
-                      }
-                  },
-                  confirmButton = {
-                      TextButton(onClick = {
-                          when {
-                              num.length != 8 -> err = "Die Nummer hat 8 Ziffern."
-                              num == me -> err = "Das ist deine eigene Nummer."
-                              checked && state == false -> err = "Diese Nummer ist nicht gültig."
-                              else -> onAdd(num, name.ifBlank { fmt(num) })
-                          }
-                      }) { Text("Speichern", color = Neon, fontWeight = FontWeight.Bold) }
-                  },
-                  dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen", color = Muted) } }
-              )
-          }
-          EOF
-
-      - name: Server-URL eintragen
-        run: sed -i "s|__SERVER__|$FUNKE_SERVER|" app/src/main/java/app/funk/Radio.kt
-
-      - name: APK bauen
-        run: gradle assembleDebug --no-daemon --stacktrace
-
-      - uses: actions/upload-artifact@v4
+      - name: APK hochladen
+        uses: actions/upload-artifact@v4
         with:
-          name: Funk-APK
+          name: ir-blaster-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
